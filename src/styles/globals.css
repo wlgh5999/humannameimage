@@ -1,0 +1,65 @@
+@import url("https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/variable/pretendardvariable-dynamic-subset.css");
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --font-pretendard: "Pretendard Variable";
+  color-scheme: light;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  background:
+    radial-gradient(circle at 16% 0%, rgba(242, 179, 138, 0.22), transparent 28%),
+    linear-gradient(135deg, #fbf8f2 0%, #f5f8f8 48%, #f8f4ec 100%);
+  color: #263238;
+  font-family: var(--font-pretendard), "Pretendard Variable", Pretendard, "Apple SD Gothic Neo", "Noto Sans KR", sans-serif;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+.checkerboard {
+  background-color: #f8f7f4;
+  background-image:
+    linear-gradient(45deg, #e9e1d7 25%, transparent 25%),
+    linear-gradient(-45deg, #e9e1d7 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #e9e1d7 75%),
+    linear-gradient(-45deg, transparent 75%, #e9e1d7 75%);
+  background-position:
+    0 0,
+    0 12px,
+    12px -12px,
+    -12px 0;
+  background-size: 24px 24px;
+}
+
+.soft-scrollbar {
+  scrollbar-color: rgba(95, 143, 139, 0.38) transparent;
+}
+
+.soft-scrollbar::-webkit-scrollbar {
+  width: 10px;
+}
+
+.soft-scrollbar::-webkit-scrollbar-thumb {
+  background: rgba(95, 143, 139, 0.28);
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background-clip: padding-box;
+}

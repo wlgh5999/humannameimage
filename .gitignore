@@ -1,0 +1,13 @@
+node_modules/
+.next/
+out/
+dist/
+work/
+outputs/
+.codex/
+.agents/
+
+.env*
+!.env.example
+
+*.tsbuildinfo
