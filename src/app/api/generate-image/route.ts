@@ -6,6 +6,7 @@ import { isTransparentOutput } from "@/lib/promptBuilder";
 import type { GeneratedPrompt, OutputType } from "@/lib/generativeTypes";
 
 export const runtime = "nodejs";
+export const maxDuration = 300;
 
 type RequestBody = {
   prompt: GeneratedPrompt;
