@@ -6,14 +6,10 @@ const AUTH_TOKEN_PAYLOAD = "humannameimage-auth-v1";
 const ONE_DAY_SECONDS = 60 * 60 * 24;
 
 export function getSitePassword() {
-  const password = process.env.SITE_PASSWORD?.trim();
+  const password = process.env.SITE_PASSWORD;
 
   if (!password) {
     return { error: "SITE_PASSWORD 환경변수가 설정되어 있지 않습니다." };
-  }
-
-  if (!/^\d{4}$/.test(password)) {
-    return { error: "SITE_PASSWORD는 숫자 4자리여야 합니다." };
   }
 
   return { password };
@@ -64,13 +60,7 @@ export async function isAuthenticated() {
 }
 
 export async function requireAuthenticated() {
-  const authenticated = await isAuthenticated();
-
-  if (!authenticated) {
-    return false;
-  }
-
-  return true;
+  return isAuthenticated();
 }
 
 export function getAuthCookieOptions() {
