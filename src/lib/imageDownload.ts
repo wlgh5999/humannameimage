@@ -5,7 +5,8 @@ export function createSafeBaseName(title: string) {
   return (
     title
       .normalize("NFC")
-      .replace(/[,，]/g, " ")
+      .replace(/[,，"'`]/g, " ")
+      .replace(/[\\/:*?<>|]+/g, " ")
       .replace(/[^\p{L}\p{N}\s_-]/gu, "")
       .trim()
       .replace(/\s+/g, "_")
@@ -16,7 +17,7 @@ export function createSafeBaseName(title: string) {
 
 export function createDownloadName(title: string, outputType: OutputType) {
   const suffix: Record<OutputType, string> = {
-    "decorated-title": "01_꾸민_제목_투명",
+    "decorated-title": "01_꾸민제목_선택안",
     "title-only": "02_제목만_투명",
     "icons-only": "03_아이콘만_투명"
   };

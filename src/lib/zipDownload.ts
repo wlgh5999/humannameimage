@@ -7,7 +7,7 @@ type ZipImage = {
 };
 
 const fileNames: Record<OutputType, string> = {
-  "decorated-title": "01_꾸민_제목_투명.png",
+  "decorated-title": "01_꾸민제목_선택안.png",
   "title-only": "02_제목만_투명.png",
   "icons-only": "03_아이콘만_투명.png"
 };
@@ -26,7 +26,7 @@ export function downloadImageZip(title: string, images: ZipImage[]) {
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
-  link.download = `${createSafeBaseName(title)}_제목이미지.zip`;
+  link.download = `${createSafeBaseName(title)}_제목이미지_3종.zip`;
   document.body.appendChild(link);
   link.click();
   link.remove();
@@ -121,7 +121,7 @@ function writeUint32LE(bytes: Uint8Array, offset: number, value: number) {
 }
 
 function concatBytes(chunks: Uint8Array[]) {
-  const total = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+  const total = chunks.reduce((sum, chunk) => chunk.length + sum, 0);
   const merged = new Uint8Array(total);
   let offset = 0;
 

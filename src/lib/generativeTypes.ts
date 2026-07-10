@@ -1,4 +1,5 @@
 export type OutputType = "decorated-title" | "title-only" | "icons-only";
+export type CandidateId = "option-1" | "option-2";
 export type TextMode = "with-text" | "without-text";
 export type ImageQuality = "high";
 export type ImageSize = "1500x730" | "1500x416" | "1500x1500";
@@ -23,6 +24,9 @@ export interface PaletteColor {
 
 export interface DesignSpec {
   id: string;
+  candidateId?: CandidateId;
+  candidateLabel?: string;
+  variantDirection?: string;
   coreEmotion: string;
   keywords: string[];
   topicCategory: string;
@@ -68,6 +72,14 @@ export interface GeneratedPromptSet {
   id: string;
   designSpec: DesignSpec;
   prompts: Record<OutputType, GeneratedPrompt>;
+  size: ImageSize;
+  quality: ImageQuality;
+  usedFallback?: boolean;
+}
+
+export interface GeneratedCandidateSet {
+  id: string;
+  candidates: Record<CandidateId, GeneratedPromptSet>;
   size: ImageSize;
   quality: ImageQuality;
   usedFallback?: boolean;

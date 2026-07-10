@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
-import { getOpenAIErrorMessage, normalizeOpenAIError } from "@/lib/openaiErrors";
 import { requireAuthenticated } from "@/lib/auth";
+import { getOpenAIErrorMessage, normalizeOpenAIError } from "@/lib/openaiErrors";
 import { buildPromptLocally } from "@/lib/promptBuilder";
 import type { EducationImageForm, GeneratedPrompt } from "@/lib/generativeTypes";
 

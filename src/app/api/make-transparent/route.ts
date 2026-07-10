@@ -17,6 +17,6 @@ export async function POST(request: Request) {
   return NextResponse.json({
     imageDataUrl: body.imageDataUrl,
     status: "passthrough",
-    message: "현재 앱에서는 클라이언트에서 흰 배경 제거, 정확한 크기 리사이즈, 300dpi PNG 처리를 수행합니다."
+    message: "현재 단계에서는 클라이언트에서 배경 제거, 정확한 크기 리사이즈, 300dpi PNG 처리를 수행합니다."
   });
 }
