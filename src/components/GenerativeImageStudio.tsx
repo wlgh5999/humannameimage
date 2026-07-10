@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   candidateDirectionMap,
   candidateLabelMap,
@@ -20,7 +20,7 @@ import type {
   ImageSize,
   OutputType
 } from "@/lib/generativeTypes";
-import { createDownloadName, createSafeBaseName, downloadDataUrl, prepareFinalPng } from "@/lib/imageDownload";
+import { createDownloadName, createSafeBaseName, downloadDataUrl } from "@/lib/imageDownload";
 import { downloadImageZip } from "@/lib/zipDownload";
 
 const sampleOne: EducationImageForm = {
@@ -84,6 +84,16 @@ type CandidateResult = {
   error?: string;
 };
 
+type TimingEntry = {
+  label: string;
+  ms: number;
+};
+
+type RequestImageOptions = {
+  inputImageDataUrl?: string;
+  sourceImageId?: string;
+};
+
 const derivativeOrder: OutputType[] = ["title-only", "icons-only"];
 
 const initialResults = (): Record<OutputType, ImageResult> => ({
@@ -119,6 +129,8 @@ export function GenerativeImageStudio() {
   const [isGenerating, setIsGenerating] = useState(false);
   const [progressText, setProgressText] = useState("");
   const [error, setError] = useState("");
+  const [timings, setTimings] = useState<TimingEntry[]>([]);
+  const runStartedAtRef = useRef(0);
 
   const todayKey = useMemo(() => getTodayStorageKey(), []);
   const candidateList = candidateOrder.map((candidateId) => candidates[candidateId]);
@@ -138,26 +150,34 @@ export function GenerativeImageStudio() {
   };
 
   const generateCandidates = async () => {
+    if (isGenerating) {
+      return;
+    }
+
     try {
       const normalizedForm = normalizeForm(form, true);
       validateForm(normalizedForm);
+      runStartedAtRef.current = performance.now();
       setForm(normalizedForm);
       setError("");
+      setTimings([]);
       setCandidateSet(null);
       setSelectedCandidateId(null);
       setPromptSet(null);
       setResults(initialResults());
-      setCandidates(initialCandidates());
+      setCandidates(markAllCandidates("generating"));
       setFlowState("generating-candidates");
       setIsGenerating(true);
-      setProgressText("교육 내용을 바탕으로 서로 다른 제목 시안 2개를 준비하는 중입니다.");
+      setProgressText("[1/3] 제목 시안 2안을 동시에 만들고 있어요...");
 
+      const promptStartedAt = performance.now();
       const promptResponse = await fetch("/api/generate-candidates", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(normalizedForm)
       });
       const promptData = await promptResponse.json();
+      const promptMs = performance.now() - promptStartedAt;
 
       if (promptResponse.status === 401) {
         window.location.href = "/login";
@@ -168,51 +188,59 @@ export function GenerativeImageStudio() {
         throw new Error(promptData.error ?? "제목 시안 프롬프트 생성에 실패했습니다.");
       }
 
+      addTiming("Prompt analysis", promptMs);
       const nextCandidateSet = promptData.candidateSet as GeneratedCandidateSet;
       setCandidateSet(nextCandidateSet);
 
-      const generatedCandidates = initialCandidates();
+      const draftStartedAt = performance.now();
+      const candidateEntries = await Promise.all(
+        candidateOrder.map(async (candidateId) => {
+          const promptSetForCandidate = nextCandidateSet.candidates[candidateId];
 
-      for (const [index, candidateId] of candidateOrder.entries()) {
-        const promptSetForCandidate = nextCandidateSet.candidates[candidateId];
-        const label = candidateLabelMap[candidateId];
-        setProgressText(`${index + 1}/2 꾸민 제목 투명 PNG ${label} 생성 중입니다.`);
-        generatedCandidates[candidateId] = {
-          ...generatedCandidates[candidateId],
-          promptSet: promptSetForCandidate,
-          status: "generating"
-        };
-        setCandidates({ ...generatedCandidates });
+          try {
+            const image = await requestImage(promptSetForCandidate, "decorated-title");
+            return {
+              candidateId,
+              result: {
+                ...initialCandidates()[candidateId],
+                promptSet: promptSetForCandidate,
+                status: "success" as const,
+                image
+              }
+            };
+          } catch (caught) {
+            return {
+              candidateId,
+              result: {
+                ...initialCandidates()[candidateId],
+                promptSet: promptSetForCandidate,
+                status: "error" as const,
+                error: caught instanceof Error ? caught.message : `${candidateLabelMap[candidateId]} 생성에 실패했습니다.`
+              }
+            };
+          }
+        })
+      );
+      const draftMs = performance.now() - draftStartedAt;
+      const nextCandidates = initialCandidates();
+      let draftResizeMs = 0;
 
-        try {
-          const image = await requestImage(promptSetForCandidate, "decorated-title");
-          const finalImageDataUrl = await prepareFinalPng(image.imageDataUrl, promptSetForCandidate.size);
-          const processedImage = { ...image, imageDataUrl: finalImageDataUrl };
-          generatedCandidates[candidateId] = {
-            ...generatedCandidates[candidateId],
-            promptSet: promptSetForCandidate,
-            status: "success",
-            image: processedImage
-          };
-        } catch (caught) {
-          generatedCandidates[candidateId] = {
-            ...generatedCandidates[candidateId],
-            promptSet: promptSetForCandidate,
-            status: "error",
-            error: caught instanceof Error ? caught.message : `${label} 생성에 실패했습니다.`
-          };
-        }
-
-        setCandidates({ ...generatedCandidates });
+      for (const entry of candidateEntries) {
+        nextCandidates[entry.candidateId] = entry.result;
+        draftResizeMs += entry.result.image?.timings?.resizeMs ?? 0;
       }
 
-      const hasCandidate = Object.values(generatedCandidates).some((candidate) => candidate.image && candidate.promptSet);
+      setCandidates(nextCandidates);
+      addTiming("Draft 1 + Draft 2 parallel generation", draftMs);
+      addTiming("Server resize and PNG processing", draftResizeMs);
+
+      const hasCandidate = Object.values(nextCandidates).some((candidate) => candidate.image && candidate.promptSet);
       if (!hasCandidate) {
         throw new Error("생성된 제목 시안이 없습니다. 잠시 후 다시 시도해 주세요.");
       }
 
       setFlowState("awaiting-selection");
-      setProgressText("마음에 드는 안을 선택해 주세요. 선택한 안을 기준으로 제목만/아이콘만 PNG를 만들겠습니다.");
+      setProgressText("[2/3] 원하는 시안을 선택해주세요.");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "제목 시안 생성에 실패했습니다.");
       setProgressText("");
@@ -233,6 +261,7 @@ export function GenerativeImageStudio() {
     setPromptSet(candidate.promptSet);
     setFlowState("generating-derivatives");
     setIsGenerating(true);
+    setProgressText("[3/3] 선택한 디자인에서 제목과 아이콘을 동시에 분리하고 있어요...");
 
     const nextResults = initialResults();
     nextResults["decorated-title"] = {
@@ -240,52 +269,64 @@ export function GenerativeImageStudio() {
       status: "success",
       image: candidate.image
     };
-    setResults(nextResults);
+    nextResults["title-only"] = { outputType: "title-only", status: "generating" };
+    nextResults["icons-only"] = { outputType: "icons-only", status: "generating" };
+    setResults({ ...nextResults });
 
-    let allDerivativesSucceeded = true;
-
-    try {
-      for (const [index, outputType] of derivativeOrder.entries()) {
+    const derivativeStartedAt = performance.now();
+    const derivativeEntries = await Promise.all(
+      derivativeOrder.map(async (outputType) => {
         const label = outputTypeLabelMap[outputType];
-        setProgressText(`${candidate.label} 기준으로 ${index + 1}/2 ${label} 생성 중입니다.`);
-        nextResults[outputType] = { outputType, status: "generating" };
-        setResults({ ...nextResults });
 
         try {
-          const image = await requestImage(candidate.promptSet, outputType);
-          const finalImageDataUrl = await prepareFinalPng(image.imageDataUrl, candidate.promptSet.size);
-          nextResults[outputType] = {
+          const image = await requestImage(candidate.promptSet as GeneratedPromptSet, outputType, {
+            inputImageDataUrl: candidate.image?.imageDataUrl,
+            sourceImageId: candidate.image?.id
+          });
+          return {
             outputType,
-            status: "success",
-            image: { ...image, imageDataUrl: finalImageDataUrl }
+            result: { outputType, status: "success" as const, image }
           };
         } catch (caught) {
-          allDerivativesSucceeded = false;
-          nextResults[outputType] = {
+          return {
             outputType,
-            status: "error",
-            error: caught instanceof Error ? caught.message : `${label} 생성에 실패했습니다.`
+            result: {
+              outputType,
+              status: "error" as const,
+              error: caught instanceof Error ? caught.message : `${label} 생성에 실패했습니다.`
+            }
           };
         }
+      })
+    );
+    const derivativeMs = performance.now() - derivativeStartedAt;
+    let derivativeResizeMs = 0;
 
-        setResults({ ...nextResults });
-      }
-
-      setFlowState("complete");
-      setProgressText(
-        allDerivativesSucceeded
-          ? "최종 3종 결과가 준비되었습니다."
-          : "선택한 안 기준으로 가능한 결과를 만들었습니다. 실패한 항목은 같은 안을 다시 선택해 재시도할 수 있습니다."
-      );
-
-      if (allDerivativesSucceeded) {
-        const nextCount = dailyCount + 1;
-        setDailyCount(nextCount);
-        window.localStorage.setItem(todayKey, String(nextCount));
-      }
-    } finally {
-      setIsGenerating(false);
+    for (const entry of derivativeEntries) {
+      nextResults[entry.outputType] = entry.result;
+      derivativeResizeMs += entry.result.image?.timings?.resizeMs ?? 0;
     }
+
+    setResults({ ...nextResults });
+    addTiming("Selected image extraction parallel processing", derivativeMs);
+    addTiming("Extraction server resize and PNG processing", derivativeResizeMs);
+    addTiming("Total", performance.now() - runStartedAtRef.current);
+
+    const allDerivativesSucceeded = derivativeEntries.every((entry) => entry.result.status === "success");
+    setFlowState("complete");
+    setProgressText(
+      allDerivativesSucceeded
+        ? "최종 3종 결과가 준비되었습니다."
+        : "선택한 디자인 기준으로 가능한 결과를 만들었습니다. 실패한 항목은 다시 선택해 재시도할 수 있습니다."
+    );
+
+    if (allDerivativesSucceeded) {
+      const nextCount = dailyCount + 1;
+      setDailyCount(nextCount);
+      window.localStorage.setItem(todayKey, String(nextCount));
+    }
+
+    setIsGenerating(false);
   };
 
   const logout = async () => {
@@ -330,7 +371,7 @@ export function GenerativeImageStudio() {
               </button>
             </div>
             <p className="mt-2 text-sm font-medium leading-6 text-slate-500">
-              먼저 꾸민 제목 시안 2개를 제안하고, 선택한 안의 디자인 스펙을 기준으로 제목만/아이콘만 PNG를 완성합니다.
+              품질은 항상 high로 유지합니다. 속도는 시안 2개 병렬 생성과 선택 후 병렬 편집으로 최적화합니다.
             </p>
           </header>
 
@@ -403,7 +444,7 @@ export function GenerativeImageStudio() {
                 ))}
               </div>
               <p className="rounded-lg bg-white px-3 py-3 text-xs font-bold leading-5 text-slate-500">
-                최종 PNG는 선택한 크기에 맞춰 리사이즈하고 300dpi 메타데이터를 넣습니다.
+                AI 생성은 한 번만 수행하고, 최종 PNG 크기 보정은 서버에서 정확히 처리합니다.
               </p>
             </FormSection>
 
@@ -434,7 +475,7 @@ export function GenerativeImageStudio() {
             <div>
               <h2 className="text-xl font-black tracking-[-0.04em] text-slate-950">생성 결과</h2>
               <p className="mt-1 text-sm font-medium text-slate-500">
-                2개 시안 중 하나를 고르면 선택한 안의 색상, 줄바꿈, 장식 구성으로 최종 3종을 만듭니다.
+                선택 전에는 제목만/아이콘만 PNG를 만들지 않습니다. 선택한 꾸민 제목 이미지를 입력 이미지로 편집합니다.
               </p>
             </div>
             <button
@@ -448,9 +489,8 @@ export function GenerativeImageStudio() {
           </div>
 
           <FlowSteps state={flowState} />
-
-          {error ? <Notice tone="error">{error}</Notice> : null}
-
+          {timings.length > 0 ? <TimingPanel timings={timings} /> : null}
+          {error ? <Notice>{error}</Notice> : null}
           {!candidateSet && flowState === "idle" ? <EmptyPrompt /> : null}
 
           {candidateSet || flowState === "generating-candidates" ? (
@@ -459,7 +499,7 @@ export function GenerativeImageStudio() {
                 <div>
                   <h3 className="font-black tracking-[-0.03em] text-slate-900">1단계: 꾸민 제목 투명 PNG 2안</h3>
                   <p className="mt-1 text-sm font-medium text-slate-500">
-                    두 안은 서로 다른 스타일이지만, 모두 제목 중심의 투명 PNG로 생성됩니다.
+                    두 시안은 동시에 생성됩니다. 둘 중 하나를 선택해야 파생 PNG가 만들어집니다.
                   </p>
                 </div>
               </div>
@@ -487,7 +527,7 @@ export function GenerativeImageStudio() {
                 <div>
                   <h3 className="font-black tracking-[-0.03em] text-slate-900">최종 3종 결과</h3>
                   <p className="mt-1 text-sm font-medium text-slate-500">
-                    선택한 {selectedCandidate?.label ?? "안"}의 디자인 스펙을 기준으로 만든 세트입니다.
+                    선택한 {selectedCandidate?.label ?? "안"}의 꾸민 제목 PNG를 입력 이미지로 사용해 분리한 세트입니다.
                   </p>
                 </div>
                 <button
@@ -528,14 +568,23 @@ export function GenerativeImageStudio() {
     setResults(initialResults());
     setError("");
     setProgressText("");
+    setTimings([]);
+  }
+
+  function addTiming(label: string, ms: number) {
+    setTimings((current) => [...current.filter((entry) => entry.label !== label), { label, ms }]);
   }
 }
 
-async function requestImage(promptSet: GeneratedPromptSet, outputType: OutputType) {
+async function requestImage(promptSet: GeneratedPromptSet, outputType: OutputType, options: RequestImageOptions = {}) {
   const response = await fetch("/api/generate-image", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ prompt: promptSet.prompts[outputType] })
+    body: JSON.stringify({
+      prompt: { ...promptSet.prompts[outputType], quality: "high" },
+      inputImageDataUrl: options.inputImageDataUrl,
+      sourceImageId: options.sourceImageId
+    })
   });
   const data = await response.json();
 
@@ -597,13 +646,13 @@ function CandidateCard({
             꾸민 제목 투명 PNG - {result.label}
           </h3>
           <p className="mt-1 text-xs font-bold leading-5 text-slate-400">
-            배경 투명 · 제목 중심 · 소량 장식 · 사람/장면/카드형 배경 제외 · {size}
+            배경 투명 후처리 · 제목 중심 · 소량 장식 · high 품질 · {size}
           </p>
         </div>
 
         {result.image ? (
           <p className="text-xs font-bold text-slate-400">
-            {result.image.model} · high · 300dpi 후처리
+            {result.image.model} · {result.image.operation ?? "generation"} · {formatSeconds(result.image.timings?.totalMs ?? 0)}
           </p>
         ) : null}
 
@@ -635,11 +684,11 @@ function FinalResultCard({ formTitle, result, size }: { formTitle: string; resul
         {result.status === "success" && result.image ? (
           <img alt={`${label} 미리보기`} className="max-h-[420px] w-full rounded-md object-contain" src={result.image.imageDataUrl} />
         ) : result.status === "generating" ? (
-          <p className="text-sm font-extrabold text-slate-500">생성 중...</p>
+          <p className="text-sm font-extrabold text-slate-500">동시에 분리 생성 중...</p>
         ) : result.status === "error" ? (
           <p className="px-4 text-center text-sm font-bold leading-6 text-red-600">{result.error}</p>
         ) : (
-          <p className="text-sm font-bold text-slate-400">선택 후 생성됩니다.</p>
+          <p className="text-sm font-bold text-slate-400">시안 선택 후 생성됩니다.</p>
         )}
       </div>
 
@@ -651,7 +700,7 @@ function FinalResultCard({ formTitle, result, size }: { formTitle: string; resul
 
         {result.image ? (
           <p className="text-xs font-bold text-slate-400">
-            {result.image.model} · high · {size}
+            {result.image.model} · {result.image.operation ?? "generation"} · high · {size}
           </p>
         ) : null}
 
@@ -691,10 +740,10 @@ function PromptSummary({ promptSet, selectedLabel }: { promptSet: GeneratedPromp
       </div>
 
       <div className="mt-4 grid gap-3 md:grid-cols-2">
-        <InfoBlock label="핵심 키워드" value={promptSet.designSpec.keywords.join(", ")} />
-        <InfoBlock label="서체 방향" value={promptSet.designSpec.typographyStyle} />
-        <InfoBlock label="장식 요소" value={promptSet.designSpec.decorations.join(", ")} />
-        <InfoBlock label="줄바꿈/배치" value={`${promptSet.designSpec.lineBreakPlan} · ${promptSet.designSpec.titlePlacement}`} />
+        <InfoBlock label="핵심 정서 3개" value={promptSet.designSpec.coreEmotions.join(", ")} />
+        <InfoBlock label="핵심 키워드 5개" value={promptSet.designSpec.keywords.join(", ")} />
+        <InfoBlock label="추천 아이콘" value={promptSet.designSpec.decorations.join(", ")} />
+        <InfoBlock label="줄바꿈" value={promptSet.designSpec.lineBreakPlan} />
       </div>
 
       <div className="mt-4">
@@ -735,9 +784,9 @@ function EmptyPrompt() {
 function FlowSteps({ state }: { state: FlowState }) {
   const steps: Array<{ state: FlowState; label: string; description: string }> = [
     { state: "idle", label: "상태 1", description: "초기 입력 상태" },
-    { state: "generating-candidates", label: "상태 2", description: "1안 / 2안 생성 중" },
-    { state: "awaiting-selection", label: "상태 3", description: "1안 / 2안 선택 대기" },
-    { state: "generating-derivatives", label: "상태 4", description: "선택안 기준 파생 생성 중" },
+    { state: "generating-candidates", label: "상태 2", description: "[1/3] 시안 2안 동시 생성" },
+    { state: "awaiting-selection", label: "상태 3", description: "[2/3] 시안 선택 대기" },
+    { state: "generating-derivatives", label: "상태 4", description: "[3/3] 제목/아이콘 동시 분리" },
     { state: "complete", label: "상태 5", description: "최종 3종 결과 표시" }
   ];
   const activeIndex = steps.findIndex((step) => step.state === state);
@@ -764,6 +813,22 @@ function FlowSteps({ state }: { state: FlowState }) {
           </div>
         );
       })}
+    </div>
+  );
+}
+
+function TimingPanel({ timings }: { timings: TimingEntry[] }) {
+  return (
+    <div className="mt-4 rounded-lg border border-slate-200 bg-white p-4">
+      <h3 className="font-black tracking-[-0.03em] text-slate-900">처리 시간</h3>
+      <div className="mt-3 grid gap-2 md:grid-cols-2">
+        {timings.map((entry) => (
+          <div key={entry.label} className="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-2">
+            <span className="text-xs font-extrabold text-slate-500">{entry.label}</span>
+            <span className="text-sm font-black text-slate-900">{formatSeconds(entry.ms)}</span>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
@@ -862,12 +927,20 @@ function InfoBlock({ label, value }: { label: string; value: string }) {
   );
 }
 
-function Notice({ tone, children }: { tone: "error"; children: ReactNode }) {
+function Notice({ children }: { children: ReactNode }) {
   return (
     <div className="mt-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm font-bold leading-6 text-red-700">
       {children}
     </div>
   );
+}
+
+function markAllCandidates(status: ResultStatus): Record<CandidateId, CandidateResult> {
+  const candidates = initialCandidates();
+  return {
+    "option-1": { ...candidates["option-1"], status },
+    "option-2": { ...candidates["option-2"], status }
+  };
 }
 
 function getTodayStorageKey() {
@@ -901,4 +974,12 @@ function validateForm(form: EducationImageForm) {
   if (!form.title) {
     throw new Error("교육명을 입력해 주세요.");
   }
+}
+
+function formatSeconds(ms: number) {
+  if (!Number.isFinite(ms) || ms <= 0) {
+    return "0.0s";
+  }
+
+  return `${(ms / 1000).toFixed(1)}s`;
 }

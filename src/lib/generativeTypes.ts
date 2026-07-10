@@ -27,6 +27,7 @@ export interface DesignSpec {
   candidateId?: CandidateId;
   candidateLabel?: string;
   variantDirection?: string;
+  coreEmotions: string[];
   coreEmotion: string;
   keywords: string[];
   topicCategory: string;
@@ -42,6 +43,7 @@ export interface DesignSpec {
 }
 
 export interface PromptAnalysis {
+  coreEmotions: string[];
   coreEmotion: string;
   keywords: string[];
   visualMetaphor: string;
@@ -99,4 +101,11 @@ export interface GeneratedImage {
   transparentRequested: boolean;
   background?: "transparent" | "opaque" | "auto";
   apiSize?: string;
+  sourceImageId?: string;
+  operation?: "generation" | "edit";
+  timings?: {
+    openaiMs: number;
+    resizeMs: number;
+    totalMs: number;
+  };
 }

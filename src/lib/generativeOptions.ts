@@ -21,8 +21,8 @@ export const outputTypeLabelMap: Record<OutputType, string> = {
 
 export const outputTypeDescriptionMap: Record<OutputType, string> = {
   "decorated-title": "제목과 소량의 아이콘 장식을 함께 담은 대표 이미지",
-  "title-only": "선택한 대표 이미지와 같은 서체, 색상, 줄바꿈의 제목 글씨만 분리한 이미지",
-  "icons-only": "선택한 대표 이미지와 같은 아이콘/장식 요소만 분리한 이미지"
+  "title-only": "선택한 꾸민 제목 이미지를 입력으로 편집해 제목 글씨만 남긴 이미지",
+  "icons-only": "선택한 꾸민 제목 이미지를 입력으로 편집해 아이콘과 장식만 남긴 이미지"
 };
 
 export const sizeOptions: Array<{ value: ImageSize; label: string; width: number; height: number }> = [
@@ -43,5 +43,9 @@ export function getOpenAIImageSize(size: ImageSize) {
     return "1024x1024";
   }
 
-  return "1536x1024";
+  if (size === "1500x416") {
+    return "1536x512";
+  }
+
+  return "1536x752";
 }
