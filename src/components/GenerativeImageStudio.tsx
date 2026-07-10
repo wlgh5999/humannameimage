@@ -18,7 +18,8 @@ import type {
   GeneratedImage,
   GeneratedPromptSet,
   ImageSize,
-  OutputType
+  OutputType,
+  PngValidationStatus
 } from "@/lib/generativeTypes";
 import { createDownloadName, createSafeBaseName, downloadDataUrl } from "@/lib/imageDownload";
 import { downloadImageZip } from "@/lib/zipDownload";
@@ -95,6 +96,8 @@ type RequestImageOptions = {
 };
 
 const derivativeOrder: OutputType[] = ["title-only", "icons-only"];
+const checkerboardFailureMessage =
+  "실제 투명 배경이 아닌 체크무늬가 감지되었습니다. 다시 생성하거나 자동 보정할 수 있습니다.";
 
 const initialResults = (): Record<OutputType, ImageResult> => ({
   "decorated-title": { outputType: "decorated-title", status: "idle" },
@@ -136,8 +139,8 @@ export function GenerativeImageStudio() {
   const candidateList = candidateOrder.map((candidateId) => candidates[candidateId]);
   const successfulFinalResults = outputOrder
     .map((outputType) => results[outputType])
-    .filter((result): result is ImageResult & { image: GeneratedImage } => Boolean(result.image));
-  const finalSetReady = outputOrder.every((outputType) => Boolean(results[outputType].image));
+    .filter((result): result is ImageResult & { image: GeneratedImage } => isValidTransparentImage(result.image));
+  const finalSetReady = outputOrder.every((outputType) => isValidTransparentImage(results[outputType].image));
   const selectedCandidate = selectedCandidateId ? candidates[selectedCandidateId] : null;
 
   useEffect(() => {
@@ -329,6 +332,107 @@ export function GenerativeImageStudio() {
     setIsGenerating(false);
   };
 
+  const regenerateCandidate = async (candidateId: CandidateId) => {
+    if (isGenerating) {
+      return;
+    }
+
+    const promptSetForCandidate = candidateSet?.candidates[candidateId] ?? candidates[candidateId].promptSet;
+    if (!promptSetForCandidate) {
+      setError("재생성할 시안 정보가 없습니다. 제목 시안 2안을 다시 생성해 주세요.");
+      return;
+    }
+
+    setError("");
+    setIsGenerating(true);
+    setProgressText(`${candidateLabelMap[candidateId]}을 다시 만들고 투명 배경을 검증하고 있어요...`);
+    setCandidates((current) => ({
+      ...current,
+      [candidateId]: {
+        ...current[candidateId],
+        promptSet: promptSetForCandidate,
+        status: "generating",
+        error: undefined
+      }
+    }));
+
+    const startedAt = performance.now();
+    try {
+      const image = await requestImage(promptSetForCandidate, "decorated-title");
+      setCandidates((current) => ({
+        ...current,
+        [candidateId]: {
+          ...current[candidateId],
+          promptSet: promptSetForCandidate,
+          image,
+          status: "success",
+          error: undefined
+        }
+      }));
+      addTiming(`${candidateLabelMap[candidateId]} retry generation`, performance.now() - startedAt);
+      setFlowState("awaiting-selection");
+      setProgressText("[2/3] 원하는 시안을 선택해주세요.");
+    } catch (caught) {
+      setCandidates((current) => ({
+        ...current,
+        [candidateId]: {
+          ...current[candidateId],
+          promptSet: promptSetForCandidate,
+          status: "error",
+          error: caught instanceof Error ? caught.message : `${candidateLabelMap[candidateId]} 재생성에 실패했습니다.`
+        }
+      }));
+      setProgressText("");
+    } finally {
+      setIsGenerating(false);
+    }
+  };
+
+  const regenerateDerivative = async (outputType: OutputType) => {
+    if (isGenerating || outputType === "decorated-title") {
+      return;
+    }
+
+    if (!promptSet || !selectedCandidate?.image) {
+      setError("선택한 꾸민 제목 이미지가 있어야 다시 분리할 수 있습니다.");
+      return;
+    }
+
+    setError("");
+    setIsGenerating(true);
+    setProgressText("선택한 디자인에서 해당 결과물을 다시 분리하고 투명 배경을 검증하고 있어요...");
+    setResults((current) => ({
+      ...current,
+      [outputType]: { outputType, status: "generating" }
+    }));
+
+    const startedAt = performance.now();
+    try {
+      const image = await requestImage(promptSet, outputType, {
+        inputImageDataUrl: selectedCandidate.image.imageDataUrl,
+        sourceImageId: selectedCandidate.image.id
+      });
+      setResults((current) => ({
+        ...current,
+        [outputType]: { outputType, status: "success", image }
+      }));
+      addTiming(`${outputTypeLabelMap[outputType]} retry extraction`, performance.now() - startedAt);
+      setProgressText("최종 3종 결과를 갱신했습니다.");
+    } catch (caught) {
+      setResults((current) => ({
+        ...current,
+        [outputType]: {
+          outputType,
+          status: "error",
+          error: caught instanceof Error ? caught.message : `${outputTypeLabelMap[outputType]} 재생성에 실패했습니다.`
+        }
+      }));
+      setProgressText("");
+    } finally {
+      setIsGenerating(false);
+    }
+  };
+
   const logout = async () => {
     await fetch("/api/auth/logout", { method: "POST" });
     window.location.href = "/login";
@@ -337,7 +441,7 @@ export function GenerativeImageStudio() {
   const downloadAll = () => {
     try {
       if (!finalSetReady) {
-        throw new Error("최종 3종 결과가 모두 준비된 뒤 ZIP 다운로드가 가능합니다.");
+        throw new Error("최종 3종 결과가 모두 실제 투명 PNG 검증을 통과한 뒤 ZIP 다운로드가 가능합니다.");
       }
 
       downloadImageZip(
@@ -513,6 +617,7 @@ export function GenerativeImageStudio() {
                     size={form.size}
                     disabled={isGenerating}
                     onSelect={() => selectCandidate(candidate.candidateId)}
+                    onRetry={() => regenerateCandidate(candidate.candidateId)}
                   />
                 ))}
               </div>
@@ -542,7 +647,13 @@ export function GenerativeImageStudio() {
 
               <div className="grid gap-4 xl:grid-cols-3">
                 {outputOrder.map((outputType) => (
-                  <FinalResultCard key={outputType} formTitle={form.title} result={results[outputType]} size={form.size} />
+                  <FinalResultCard
+                    key={outputType}
+                    formTitle={form.title}
+                    result={results[outputType]}
+                    size={form.size}
+                    onRetry={outputType === "decorated-title" ? undefined : () => regenerateDerivative(outputType)}
+                  />
                 ))}
               </div>
 
@@ -594,7 +705,12 @@ async function requestImage(promptSet: GeneratedPromptSet, outputType: OutputTyp
   }
 
   if (!response.ok) {
-    throw new Error(data.error ?? `${outputTypeLabelMap[outputType]} 생성에 실패했습니다.`);
+    const status = data.status as PngValidationStatus | undefined;
+    throw new Error(
+      status === "CHECKERBOARD_DETECTED"
+        ? checkerboardFailureMessage
+        : data.error ?? `${outputTypeLabelMap[outputType]} 생성에 실패했습니다.`
+    );
   }
 
   return data.image as GeneratedImage;
@@ -606,7 +722,8 @@ function CandidateCard({
   selected,
   size,
   disabled,
-  onSelect
+  onSelect,
+  onRetry
 }: {
   formTitle: string;
   result: CandidateResult;
@@ -614,7 +731,10 @@ function CandidateCard({
   size: ImageSize;
   disabled: boolean;
   onSelect: () => void;
+  onRetry: () => void;
 }) {
+  const canDownload = isValidTransparentImage(result.image);
+
   return (
     <article
       className={`overflow-hidden rounded-lg border bg-white shadow-sm transition ${
@@ -655,28 +775,50 @@ function CandidateCard({
             {result.image.model} · {result.image.operation ?? "generation"} · {formatSeconds(result.image.timings?.totalMs ?? 0)}
           </p>
         ) : null}
+        {result.image ? <ValidationMeta image={result.image} /> : null}
 
         <div className="flex flex-wrap gap-2">
           <ActionButton
-            disabled={!result.image}
+            disabled={!canDownload}
             onClick={() => {
-              if (!result.image) return;
+              if (!canDownload || !result.image) return;
               downloadDataUrl(result.image.imageDataUrl, `${createSafeBaseName(formTitle)}_${result.label}_꾸민제목_투명.png`);
             }}
           >
             {result.label} PNG 다운로드
           </ActionButton>
-          <ActionButton disabled={disabled || !result.image} onClick={onSelect}>
+          <ActionButton disabled={disabled || !canDownload} onClick={onSelect}>
             {result.label} 선택
           </ActionButton>
+          {result.status === "error" ? (
+            <>
+              <ActionButton disabled={disabled} onClick={onRetry}>
+                자동 보정
+              </ActionButton>
+              <ActionButton disabled={disabled} onClick={onRetry}>
+                다시 생성
+              </ActionButton>
+            </>
+          ) : null}
         </div>
       </div>
     </article>
   );
 }
 
-function FinalResultCard({ formTitle, result, size }: { formTitle: string; result: ImageResult; size: ImageSize }) {
+function FinalResultCard({
+  formTitle,
+  result,
+  size,
+  onRetry
+}: {
+  formTitle: string;
+  result: ImageResult;
+  size: ImageSize;
+  onRetry?: () => void;
+}) {
   const label = outputTypeLabelMap[result.outputType];
+  const canDownload = isValidTransparentImage(result.image);
 
   return (
     <article className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
@@ -703,18 +845,37 @@ function FinalResultCard({ formTitle, result, size }: { formTitle: string; resul
             {result.image.model} · {result.image.operation ?? "generation"} · high · {size}
           </p>
         ) : null}
+        {result.image ? <ValidationMeta image={result.image} /> : null}
 
         <ActionButton
-          disabled={!result.image}
+          disabled={!canDownload}
           onClick={() => {
-            if (!result.image) return;
+            if (!canDownload || !result.image) return;
             downloadDataUrl(result.image.imageDataUrl, createDownloadName(formTitle, result.outputType));
           }}
         >
           PNG 다운로드
         </ActionButton>
+        {result.status === "error" && onRetry ? (
+          <div className="flex flex-wrap gap-2">
+            <ActionButton onClick={onRetry}>자동 보정</ActionButton>
+            <ActionButton onClick={onRetry}>다시 생성</ActionButton>
+          </div>
+        ) : null}
       </div>
     </article>
+  );
+}
+
+function ValidationMeta({ image }: { image: GeneratedImage }) {
+  const isValid = isValidTransparentImage(image);
+
+  return (
+    <p className={`text-xs font-extrabold ${isValid ? "text-[#527d79]" : "text-red-600"}`}>
+      {getValidationLabel(image.validationStatus)}
+      {image.corrected ? " · 자동 보정됨" : ""}
+      {image.validation ? ` · 투명 ${formatPercent(image.validation.transparentPixelRatio)}` : ""}
+    </p>
   );
 }
 
@@ -974,6 +1135,30 @@ function validateForm(form: EducationImageForm) {
   if (!form.title) {
     throw new Error("교육명을 입력해 주세요.");
   }
+}
+
+function isValidTransparentImage(image?: GeneratedImage) {
+  return image?.validationStatus === "VALID_TRANSPARENT_PNG";
+}
+
+function getValidationLabel(status?: PngValidationStatus) {
+  const labels: Record<PngValidationStatus, string> = {
+    VALID_TRANSPARENT_PNG: "투명 PNG 검증 완료",
+    CHECKERBOARD_DETECTED: "체크무늬 감지",
+    NO_ALPHA_CHANNEL: "알파 채널 없음",
+    LOW_TRANSPARENCY: "투명 영역 부족",
+    PROCESSING_FAILED: "PNG 처리 실패"
+  };
+
+  return status ? labels[status] : "투명 PNG 검증 대기";
+}
+
+function formatPercent(value: number) {
+  if (!Number.isFinite(value)) {
+    return "0%";
+  }
+
+  return `${Math.round(value * 100)}%`;
 }
 
 function formatSeconds(ms: number) {

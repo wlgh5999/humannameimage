@@ -87,6 +87,24 @@ export interface GeneratedCandidateSet {
   usedFallback?: boolean;
 }
 
+export type PngValidationStatus =
+  | "VALID_TRANSPARENT_PNG"
+  | "CHECKERBOARD_DETECTED"
+  | "NO_ALPHA_CHANNEL"
+  | "LOW_TRANSPARENCY"
+  | "PROCESSING_FAILED";
+
+export interface PngValidationResult {
+  status: PngValidationStatus;
+  hasAlphaChannel: boolean;
+  transparentPixelRatio: number;
+  checkerboardDetected: boolean;
+  checkerboardAlternatingRatio?: number;
+  checkerboardColors?: string[];
+  corrected: boolean;
+  message?: string;
+}
+
 export interface GeneratedImage {
   id: string;
   imageDataUrl: string;
@@ -103,6 +121,10 @@ export interface GeneratedImage {
   apiSize?: string;
   sourceImageId?: string;
   operation?: "generation" | "edit";
+  validationStatus?: PngValidationStatus;
+  validation?: PngValidationResult;
+  corrected?: boolean;
+  retryCount?: number;
   timings?: {
     openaiMs: number;
     resizeMs: number;

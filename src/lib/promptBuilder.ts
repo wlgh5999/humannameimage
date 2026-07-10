@@ -229,7 +229,14 @@ const sharedAvoid = [
   "aggressive comic logo",
   "distorted Korean letters",
   "tiny unreadable decorations",
-  "crowded sticker composition"
+  "crowded sticker composition",
+  "checkerboard pattern",
+  "transparency preview pattern",
+  "white and gray squares",
+  "gray checkerboard",
+  "black-and-white checkerboard",
+  "simulated transparency",
+  "visible background texture"
 ];
 
 export function buildCandidatePromptSets(form: EducationImageForm): GeneratedCandidateSet {
@@ -368,6 +375,19 @@ function buildPromptFromSpec(form: EducationImageForm, spec: DesignSpec, outputT
 function createImagePrompt(form: EducationImageForm, spec: DesignSpec, outputType: OutputType) {
   const title = form.title.trim();
   const paletteText = spec.palette.map((color) => `${color.hex} for ${color.usage}`).join("; ");
+  const trueTransparencyRules = [
+    "Use a true transparent alpha background.",
+    "IMPORTANT:",
+    "- Do NOT draw a checkerboard pattern.",
+    "- Do NOT simulate transparency with white and gray squares.",
+    "- Do NOT render any transparency preview pattern.",
+    "- Do NOT draw a black-and-white checkerboard.",
+    "- Do NOT draw a gray checkerboard.",
+    "- Do NOT include any visible background texture.",
+    "- The background must be actual alpha transparency.",
+    "- Background pixels must be transparent, not painted.",
+    "- Return an isolated PNG asset with real alpha transparency."
+  ].join("\n");
   const designBrief = [
     `Title: "${title}"`,
     `Core emotions: ${spec.coreEmotions.join(", ")}`,
@@ -383,10 +403,10 @@ function createImagePrompt(form: EducationImageForm, spec: DesignSpec, outputTyp
 
   const commonRules = [
     "Create an isolated reusable Korean education-promotion PNG asset.",
-    "The final image must be title-centered, transparent-ready, readable in Korean, and not crowded.",
+    trueTransparencyRules,
+    "The final image must be title-centered, readable in Korean, and not crowded.",
     "Use only a small amount of decoration.",
     "No people, no human characters, no scene, no photo, no card background, no frame, no banner rectangle.",
-    "If native transparency is not available, use pure white #FFFFFF only so the server can remove it.",
     `Avoid: ${spec.avoid.join(", ")}.`
   ].join("\n");
 
@@ -398,6 +418,8 @@ function createImagePrompt(form: EducationImageForm, spec: DesignSpec, outputTyp
       `Render the Korean title exactly: "${title}".`,
       `Candidate direction: ${spec.candidateLabel} / ${spec.variantDirection}.`,
       "Use the title as the dominant element. Add only the listed small icons/decorations.",
+      "Decorated title output must contain only the Korean headline plus a few small matching decorative icons.",
+      "No people, no scene, no card, no panel, no opaque background, no checkerboard.",
       "Do not add subtitle text, body text, labels, badges, or extra readable words.",
       "Quality must be high."
     ].join("\n");
@@ -412,6 +434,7 @@ function createImagePrompt(form: EducationImageForm, spec: DesignSpec, outputTyp
       `Keep only the Korean title lettering exactly as shown in the input image: "${title}".`,
       "Preserve the selected image's Hangul lettering style, color emphasis, line breaks, scale, and placement.",
       "Remove every icon, heart, leaf, curve, dotted line, speech bubble, sparkle, sticker, and decorative element.",
+      "Only Korean headline text is allowed. No icons, leaves, hearts, lines, people, scene, card, panel, checkerboard, simulated transparency, white background, or gray background.",
       "Do not redraw a new independent design. Derive this layer from the provided input image.",
       "Quality must be high."
     ].join("\n");
@@ -424,6 +447,7 @@ function createImagePrompt(form: EducationImageForm, spec: DesignSpec, outputTyp
     "Output an icons-only transparent PNG.",
     "Remove all Korean title lettering and all readable text.",
     "Preserve only the selected image's icons and decorative marks, with the same colors, scale relationship, line weight, and placement logic.",
+    "Only decorative icons from the selected design are allowed. No text, no new icon set, no checkerboard, no simulated transparency, no white background, no gray background.",
     "Do not invent a new icon set. Do not add unrelated icons. Derive this layer from the provided input image.",
     "Quality must be high."
   ].join("\n");
