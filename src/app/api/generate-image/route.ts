@@ -1,4 +1,6 @@
 import { NextResponse } from "next/server";
+import { requireAuthenticated } from "@/lib/auth";
+import { getOpenAIImageSize } from "@/lib/generativeOptions";
 import { getOpenAIErrorMessage } from "@/lib/openaiErrors";
 import { isTransparentOutput } from "@/lib/promptBuilder";
 import type { GeneratedPrompt, OutputType } from "@/lib/generativeTypes";
@@ -11,12 +13,14 @@ type RequestBody = {
 };
 
 export async function POST(request: Request) {
+  if (!(await requireAuthenticated())) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
   try {
     if (!process.env.OPENAI_API_KEY) {
       return NextResponse.json(
-        {
-          error: ".env.local에 OPENAI_API_KEY를 설정해야 이미지를 생성할 수 있습니다."
-        },
+        { error: "OPENAI_API_KEY를 설정해야 이미지를 생성할 수 있습니다." },
         { status: 400 }
       );
     }
@@ -25,12 +29,19 @@ export async function POST(request: Request) {
     const prompt = body.prompt;
     const transparentRequested = isTransparentOutput(prompt.outputType);
     const model = chooseImageModel(prompt.outputType);
-    const apiPrompt = [prompt.prompt, body.variationHint].filter(Boolean).join("\n\n");
+    const apiSize = getOpenAIImageSize(prompt.size);
+    const apiPrompt = [
+      prompt.prompt,
+      body.variationHint,
+      "Final reminder: produce an isolated reusable transparent PNG asset. If transparent background is unsupported, use only pure white background for post-processing."
+    ]
+      .filter(Boolean)
+      .join("\n\n");
     const requestBody: Record<string, unknown> = {
       model,
       prompt: apiPrompt,
       n: 1,
-      size: prompt.size,
+      size: apiSize,
       quality: prompt.quality,
       output_format: "png"
     };
@@ -54,9 +65,7 @@ export async function POST(request: Request) {
 
     if (!response.ok) {
       return NextResponse.json(
-        {
-          error: getOpenAIErrorMessage(data, "OpenAI 이미지 생성 API 요청에 실패했습니다.")
-        },
+        { error: getOpenAIErrorMessage(data, "OpenAI 이미지 생성 API 요청에 실패했습니다.") },
         { status: response.status }
       );
     }
@@ -65,12 +74,7 @@ export async function POST(request: Request) {
     const b64 = first?.b64_json;
 
     if (!b64) {
-      return NextResponse.json(
-        {
-          error: "OpenAI 응답에 이미지 데이터가 없습니다."
-        },
-        { status: 502 }
-      );
+      return NextResponse.json({ error: "OpenAI 응답에 이미지 데이터가 없습니다." }, { status: 502 });
     }
 
     return NextResponse.json({
@@ -86,20 +90,21 @@ export async function POST(request: Request) {
         usage: data.usage,
         revisedPrompt: first.revised_prompt,
         transparentRequested,
-        background: data.background ?? requestBody.background
+        background: data.background ?? requestBody.background,
+        apiSize
       }
     });
   } catch (error) {
     return NextResponse.json(
-      {
-        error: error instanceof Error ? error.message : "이미지 생성 중 오류가 발생했습니다."
-      },
+      { error: error instanceof Error ? error.message : "이미지 생성 중 오류가 발생했습니다." },
       { status: 500 }
     );
   }
 }
 
 function chooseImageModel(outputType: OutputType) {
+  void outputType;
+
   if (process.env.OPENAI_IMAGE_MODEL) {
     return process.env.OPENAI_IMAGE_MODEL;
   }

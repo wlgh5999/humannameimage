@@ -1,14 +1,8 @@
-import type { OutputType } from "@/lib/generativeTypes";
+import { parseImageSize } from "@/lib/generativeOptions";
+import type { ImageSize, OutputType } from "@/lib/generativeTypes";
 
-const transparentOutputTypes: OutputType[] = ["title-transparent", "title-decorated-transparent", "icons-transparent"];
-
-export function createDownloadName(title: string, outputType: OutputType) {
-  const suffix: Record<OutputType, string> = {
-    "title-transparent": "제목_글씨만_투명_300dpi",
-    "title-decorated-transparent": "꾸민제목_투명_300dpi",
-    "icons-transparent": "아이콘모음_투명_300dpi"
-  };
-  const base =
+export function createSafeBaseName(title: string) {
+  return (
     title
       .normalize("NFC")
       .replace(/[,，]/g, " ")
@@ -16,22 +10,38 @@ export function createDownloadName(title: string, outputType: OutputType) {
       .trim()
       .replace(/\s+/g, "_")
       .replace(/_+/g, "_")
-      .slice(0, 80) || "education_image";
-
-  return `${base}_${suffix[outputType]}.png`;
+      .slice(0, 80) || "education_title"
+  );
 }
 
-export async function downloadGeneratedImage(dataUrl: string, fileName: string, outputType: OutputType) {
-  const transparentDataUrl = transparentOutputTypes.includes(outputType)
-    ? await removeLightBackground(dataUrl)
-    : dataUrl;
-  const finalDataUrl = setPngDpi(transparentDataUrl, 300);
+export function createDownloadName(title: string, outputType: OutputType) {
+  const suffix: Record<OutputType, string> = {
+    "decorated-title": "01_꾸민_제목_투명",
+    "title-only": "02_제목만_투명",
+    "icons-only": "03_아이콘만_투명"
+  };
+
+  return `${createSafeBaseName(title)}_${suffix[outputType]}.png`;
+}
+
+export async function prepareFinalPng(dataUrl: string, size: ImageSize) {
+  const transparentDataUrl = await removeLightBackground(dataUrl);
+  const resizedDataUrl = await resizeToExactCanvas(transparentDataUrl, size);
+  return setPngDpi(resizedDataUrl, 300);
+}
+
+export function downloadDataUrl(dataUrl: string, fileName: string) {
   const link = document.createElement("a");
-  link.href = finalDataUrl;
+  link.href = dataUrl;
   link.download = fileName;
   document.body.appendChild(link);
   link.click();
   link.remove();
+}
+
+export async function downloadGeneratedImage(dataUrl: string, fileName: string, size: ImageSize) {
+  const finalDataUrl = await prepareFinalPng(dataUrl, size);
+  downloadDataUrl(finalDataUrl, fileName);
 }
 
 export function removeLightBackground(dataUrl: string, lightCutoff = 246) {
@@ -77,6 +87,42 @@ export function removeLightBackground(dataUrl: string, lightCutoff = 246) {
   });
 }
 
+export function resizeToExactCanvas(dataUrl: string, size: ImageSize) {
+  return new Promise<string>((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => {
+      const { width, height } = parseImageSize(size);
+      const canvas = document.createElement("canvas");
+      const context = canvas.getContext("2d");
+
+      if (!context) {
+        reject(new Error("이미지 크기를 조정할 수 없습니다."));
+        return;
+      }
+
+      canvas.width = width;
+      canvas.height = height;
+      context.clearRect(0, 0, width, height);
+      context.imageSmoothingEnabled = true;
+      context.imageSmoothingQuality = "high";
+
+      const padding = Math.max(20, Math.round(Math.min(width, height) * 0.05));
+      const availableWidth = width - padding * 2;
+      const availableHeight = height - padding * 2;
+      const scale = Math.min(availableWidth / image.width, availableHeight / image.height);
+      const drawWidth = Math.round(image.width * scale);
+      const drawHeight = Math.round(image.height * scale);
+      const x = Math.round((width - drawWidth) / 2);
+      const y = Math.round((height - drawHeight) / 2);
+
+      context.drawImage(image, x, y, drawWidth, drawHeight);
+      resolve(canvas.toDataURL("image/png"));
+    };
+    image.onerror = () => reject(new Error("생성 이미지를 불러올 수 없습니다."));
+    image.src = dataUrl;
+  });
+}
+
 export function setPngDpi(dataUrl: string, dpi = 300) {
   if (!dataUrl.startsWith("data:image/png;base64,")) {
     return dataUrl;
@@ -97,6 +143,15 @@ export function setPngDpi(dataUrl: string, dpi = 300) {
   }
 }
 
+export function dataUrlToBytes(dataUrl: string) {
+  const [, base64 = ""] = dataUrl.split(",");
+  return base64ToBytes(base64);
+}
+
+export function bytesToDataUrl(bytes: Uint8Array) {
+  return `data:image/png;base64,${bytesToBase64(bytes)}`;
+}
+
 function insertOrReplacePhysChunk(png: Uint8Array, physChunk: Uint8Array) {
   const signatureLength = 8;
   let offset = signatureLength;
@@ -115,9 +170,7 @@ function insertOrReplacePhysChunk(png: Uint8Array, physChunk: Uint8Array) {
     if (type === "pHYs" && !inserted) {
       chunks.push(physChunk);
       inserted = true;
-    } else if (type === "pHYs") {
-      // Drop duplicate pHYs chunks after writing our 300dpi metadata.
-    } else {
+    } else if (type !== "pHYs") {
       chunks.push(png.slice(offset, chunkEnd));
       if (type === "IHDR" && !inserted) {
         chunks.push(physChunk);
@@ -145,7 +198,7 @@ function makePngChunk(type: string, data: Uint8Array) {
   return chunk;
 }
 
-function crc32(bytes: Uint8Array) {
+export function crc32(bytes: Uint8Array) {
   let crc = 0xffffffff;
 
   for (const byte of bytes) {

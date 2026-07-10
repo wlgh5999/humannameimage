@@ -1,11 +1,16 @@
 import { NextResponse } from "next/server";
 import { getOpenAIErrorMessage, normalizeOpenAIError } from "@/lib/openaiErrors";
+import { requireAuthenticated } from "@/lib/auth";
 import { buildPromptLocally } from "@/lib/promptBuilder";
 import type { EducationImageForm, GeneratedPrompt } from "@/lib/generativeTypes";
 
 export const runtime = "nodejs";
 
 export async function POST(request: Request) {
+  if (!(await requireAuthenticated())) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
   try {
     const form = (await request.json()) as EducationImageForm;
     const localPrompt = buildPromptLocally(form);
@@ -13,13 +18,12 @@ export async function POST(request: Request) {
     if (!process.env.OPENAI_API_KEY) {
       return NextResponse.json({
         prompt: localPrompt,
-        warning: ".env.local에 OPENAI_API_KEY가 없어 로컬 규칙 기반 프롬프트를 만들었습니다."
+        warning: "OPENAI_API_KEY가 없어 로컬 규칙 기반 프롬프트를 만들었습니다."
       });
     }
 
     try {
       const prompt = await createPromptWithOpenAI(form, localPrompt);
-
       return NextResponse.json({ prompt });
     } catch (error) {
       return NextResponse.json({
@@ -31,9 +35,7 @@ export async function POST(request: Request) {
     }
   } catch (error) {
     return NextResponse.json(
-      {
-        error: error instanceof Error ? error.message : "프롬프트 생성 중 오류가 발생했습니다."
-      },
+      { error: error instanceof Error ? error.message : "프롬프트 생성 중 오류가 발생했습니다." },
       { status: 500 }
     );
   }
@@ -53,25 +55,26 @@ async function createPromptWithOpenAI(form: EducationImageForm, localPrompt: Gen
         {
           role: "system",
           content:
-            "You are an art director for Korean social-impact education promotion. Use the localDraft as the base and preserve its output-type rules, transparent PNG workflow, exact Korean title/no-text constraints, moderated Human Impact thumbnail grammar, and 300dpi-ready quality direction. Keep the style warm, refined, and not overly aggressive. Return only valid JSON matching the provided shape. Do not add markdown."
+            "You are an art director for Korean social-impact education promotion. Preserve the local designSpec exactly. Return only valid JSON. Do not change the output type, title text, color palette, line break plan, decoration list, or layer separation rules."
         },
         {
           role: "user",
           content: JSON.stringify({
-            task: "Create an image generation prompt plan for OpenAI Image API.",
+            task: "Refine the image generation prompt without changing the locked designSpec.",
             requiredShape: {
               analysis: {
                 coreEmotion: "string in Korean",
-                keywords: ["five short strings"],
+                keywords: ["short strings"],
                 visualMetaphor: "string",
                 recommendedColors: ["color names and hex codes"],
                 avoid: ["strings"],
                 titlePlacement: "string",
                 typographyStyle: "string",
                 aspectRatio: "string",
-                transparentBackground: "boolean"
+                transparentBackground: "boolean",
+                designSpecId: "string"
               },
-              prompt: "English image generation prompt. Preserve localDraft output constraints. Include the exact Korean title only when textMode is with-text. If textMode is without-text, explicitly forbid all readable text. Mention pure white background for post-processing to transparency and 300dpi-ready high-resolution PNG.",
+              prompt: "English image generation prompt preserving the localDraft designSpec and output-specific layer rules.",
               negativePrompt: "comma-separated avoid list",
               palette: [{ name: "string", hex: "#RRGGBB", usage: "string in Korean" }]
             },
@@ -104,6 +107,7 @@ async function createPromptWithOpenAI(form: EducationImageForm, localPrompt: Gen
     textMode: form.textMode,
     size: form.size,
     quality: form.quality,
+    designSpec: localPrompt.designSpec,
     model,
     usedFallback: false
   };

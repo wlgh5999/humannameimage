@@ -1,7 +1,7 @@
-export type OutputType = "title-transparent" | "title-decorated-transparent" | "icons-transparent";
+export type OutputType = "decorated-title" | "title-only" | "icons-only";
 export type TextMode = "with-text" | "without-text";
 export type ImageQuality = "high";
-export type ImageSize = "1024x1024" | "1536x1024" | "1024x1536";
+export type ImageSize = "1500x730" | "1500x416" | "1500x1500";
 
 export interface EducationImageForm {
   title: string;
@@ -15,6 +15,28 @@ export interface EducationImageForm {
   styleSeed: number;
 }
 
+export interface PaletteColor {
+  name: string;
+  hex: string;
+  usage: string;
+}
+
+export interface DesignSpec {
+  id: string;
+  coreEmotion: string;
+  keywords: string[];
+  topicCategory: string;
+  visualMetaphor: string;
+  palette: PaletteColor[];
+  typographyStyle: string;
+  lineBreakPlan: string;
+  titlePlacement: string;
+  decorations: string[];
+  emphasisWords: string[];
+  avoid: string[];
+  size: ImageSize;
+}
+
 export interface PromptAnalysis {
   coreEmotion: string;
   keywords: string[];
@@ -25,23 +47,30 @@ export interface PromptAnalysis {
   typographyStyle: string;
   aspectRatio: string;
   transparentBackground: boolean;
+  designSpecId?: string;
 }
 
 export interface GeneratedPrompt {
   analysis: PromptAnalysis;
   prompt: string;
   negativePrompt: string;
-  palette: Array<{
-    name: string;
-    hex: string;
-    usage: string;
-  }>;
+  palette: PaletteColor[];
   outputType: OutputType;
   textMode: TextMode;
   size: ImageSize;
   quality: ImageQuality;
+  designSpec: DesignSpec;
   usedFallback?: boolean;
   model?: string;
+}
+
+export interface GeneratedPromptSet {
+  id: string;
+  designSpec: DesignSpec;
+  prompts: Record<OutputType, GeneratedPrompt>;
+  size: ImageSize;
+  quality: ImageQuality;
+  usedFallback?: boolean;
 }
 
 export interface GeneratedImage {
@@ -57,4 +86,5 @@ export interface GeneratedImage {
   revisedPrompt?: string;
   transparentRequested: boolean;
   background?: "transparent" | "opaque" | "auto";
+  apiSize?: string;
 }
