@@ -394,7 +394,10 @@ function createImagePrompt(form: EducationImageForm, spec: DesignSpec, outputTyp
     "- Do NOT include a card, panel, frame, or solid rectangle.",
     "- The background must be actual alpha transparency.",
     "- Background pixels must be transparent, not painted.",
-    "- Return a production-ready isolated PNG asset with real alpha transparency."
+    "- Return a production-ready isolated PNG asset with real alpha transparency.",
+    "- If the model cannot encode alpha, use a single flat pure magenta #FF00FF chroma-key background only.",
+    "- Do NOT use magenta, pink-magenta, or #FF00FF in the title lettering, outline, shadow, icons, highlights, or decorations.",
+    "- Empty holes/counters inside Korean glyphs must reveal alpha transparency or the same removable #FF00FF chroma-key background."
   ].join("\n");
   const designBrief = [
     `Title: "${title}"`,

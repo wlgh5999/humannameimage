@@ -58,15 +58,22 @@ export async function prepareServerPng(
     const initialCheckerboard = detectCheckerboardFromEdges(decoded);
     const backgroundModel = getEdgeBackgroundModel(decoded);
     const removed = removeEdgeConnectedBackground(decoded, initialCheckerboard, backgroundModel);
+    const chromaRemoved = removeChromaKeyPixels(
+      {
+        ...decoded,
+        data: removed.buffer
+      },
+      backgroundModel
+    );
     const punched = options.punchOutInteriorLight
       ? removeEnclosedLightIslands(
           {
             ...decoded,
-            data: removed.buffer
+            data: chromaRemoved.buffer
           },
           { preserveLargeDecorations: true }
         )
-      : { buffer: removed.buffer, changedPixels: 0 };
+      : { buffer: chromaRemoved.buffer, changedPixels: 0 };
     const sourcePng = await rgbaToPng(punched.buffer, decoded.width, decoded.height);
     const { width, height } = parseImageSize(size);
     const output = await sharp(sourcePng, { density: 300 })
@@ -81,7 +88,7 @@ export async function prepareServerPng(
       .withMetadata({ density: 300 })
       .toBuffer();
     const validation = await validateTransparentPng(output, {
-      corrected: removed.changedPixels + punched.changedPixels > 0,
+      corrected: removed.changedPixels + chromaRemoved.changedPixels + punched.changedPixels > 0,
       originalHadAlpha: decoded.hasAlphaChannel
     });
 
@@ -324,13 +331,20 @@ async function normalizeTransparentPng(input: Buffer) {
   const checkerboard = detectCheckerboardFromEdges(decoded);
   const backgroundModel = getEdgeBackgroundModel(decoded);
   const removed = removeEdgeConnectedBackground(decoded, checkerboard, backgroundModel);
+  const chromaRemoved = removeChromaKeyPixels(
+    {
+      ...decoded,
+      data: removed.buffer
+    },
+    backgroundModel
+  );
 
   return {
-    buffer: await rgbaToPng(removed.buffer, decoded.width, decoded.height),
+    buffer: await rgbaToPng(chromaRemoved.buffer, decoded.width, decoded.height),
     width: decoded.width,
     height: decoded.height,
     originalHadAlpha: decoded.hasAlphaChannel,
-    corrected: removed.changedPixels > 0
+    corrected: removed.changedPixels + chromaRemoved.changedPixels > 0
   };
 }
 
@@ -484,6 +498,27 @@ function removeEnclosedLightIslands(
   return { buffer: bytes, changedPixels };
 }
 
+function removeChromaKeyPixels(image: RgbaImage, backgroundModel: EdgeBackgroundModel): BackgroundRemovalResult {
+  const bytes = Buffer.from(image.data);
+  const keyColors = backgroundModel.colors.filter(isChromaKeyColor);
+  let changedPixels = 0;
+
+  for (let byteIndex = 0; byteIndex < bytes.length; byteIndex += 4) {
+    if (bytes[byteIndex + 3] <= 8) {
+      continue;
+    }
+
+    if (!isLikelyChromaKeyPixel(bytes, byteIndex, keyColors)) {
+      continue;
+    }
+
+    bytes[byteIndex + 3] = 0;
+    changedPixels += 1;
+  }
+
+  return { buffer: bytes, changedPixels };
+}
+
 function isBackgroundCandidate(
   bytes: Buffer,
   byteIndex: number,
@@ -524,6 +559,36 @@ function isInteriorHoleCandidate(bytes: Buffer, byteIndex: number) {
   const chroma = maxChannel - minChannel;
 
   return alpha > 32 && minChannel >= 155 && chroma <= 48;
+}
+
+function isChromaKeyColor(color: [number, number, number]) {
+  const [red, green, blue] = color;
+  return isMagentaKey(red, green, blue) || isGreenKey(red, green, blue);
+}
+
+function isLikelyChromaKeyPixel(bytes: Buffer, byteIndex: number, keyColors: Array<[number, number, number]>) {
+  const red = bytes[byteIndex];
+  const green = bytes[byteIndex + 1];
+  const blue = bytes[byteIndex + 2];
+  const alpha = bytes[byteIndex + 3];
+
+  if (alpha <= 8) {
+    return false;
+  }
+
+  if (isMagentaKey(red, green, blue) || isGreenKey(red, green, blue)) {
+    return true;
+  }
+
+  return keyColors.some((color) => colorDistance(color, [red, green, blue]) <= 92);
+}
+
+function isMagentaKey(red: number, green: number, blue: number) {
+  return red >= 150 && blue >= 135 && green <= 145 && red - green >= 45 && blue - green >= 35;
+}
+
+function isGreenKey(red: number, green: number, blue: number) {
+  return green >= 150 && red <= 135 && blue <= 145 && green - red >= 45 && green - blue >= 35;
 }
 
 function getEdgeBackgroundModel(image: RgbaImage): EdgeBackgroundModel {

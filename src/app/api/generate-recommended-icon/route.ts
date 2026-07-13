@@ -200,6 +200,8 @@ function buildRecommendedIconPrompt({
     "Create one complementary icon that is not a duplicate of the actual icons.",
     "",
     "Use a true transparent alpha background.",
+    "If native alpha is not available, use one single flat pure magenta #FF00FF chroma-key background only.",
+    "Do not use magenta, pink-magenta, or #FF00FF anywhere in the icon artwork, outline, shadow, texture, or highlight.",
     "IMPORTANT:",
     "- Do NOT draw a checkerboard pattern.",
     "- Do NOT simulate transparency with white and gray squares.",
