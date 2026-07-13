@@ -165,6 +165,34 @@ export async function prepareIconPng(base64Png: string, options: { maxSize?: num
   }
 }
 
+export async function prepareBackgroundPng(base64Png: string, options: { width?: number; height?: number } = {}) {
+  const startedAt = performance.now();
+  const width = options.width ?? 1920;
+  const height = options.height ?? 1440;
+
+  const input = Buffer.from(base64Png, "base64");
+  const output = await sharp(input, { density: 300, failOn: "none" })
+    .rotate()
+    .flatten({ background: { r: 248, g: 244, b: 236 } })
+    .resize({
+      width,
+      height,
+      fit: "cover",
+      position: "center",
+      kernel: "lanczos3"
+    })
+    .png({ compressionLevel: 9, adaptiveFiltering: true, force: true })
+    .withMetadata({ density: 300 })
+    .toBuffer();
+
+  return {
+    imageDataUrl: `data:image/png;base64,${output.toString("base64")}`,
+    width,
+    height,
+    processingMs: performance.now() - startedAt
+  };
+}
+
 export async function extractActualIconAssets({
   imageDataUrl,
   specs,

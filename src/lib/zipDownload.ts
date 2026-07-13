@@ -1,5 +1,5 @@
 import { createSafeBaseName, crc32, dataUrlToBytes } from "@/lib/imageDownload";
-import type { GeneratedIconAsset, GeneratedImage, OutputType } from "@/lib/generativeTypes";
+import type { GeneratedBackgroundAsset, GeneratedIconAsset, GeneratedImage, OutputType } from "@/lib/generativeTypes";
 
 type ZipImage = {
   outputType: OutputType;
@@ -54,18 +54,34 @@ export function downloadAllIconsZip(title: string, actualIcons: GeneratedIconAss
   downloadZipFiles(`${createSafeBaseName(title)}_아이콘전체.zip`, files);
 }
 
+export function downloadBackgroundZip(title: string, backgrounds: GeneratedBackgroundAsset[]) {
+  if (backgrounds.length === 0) {
+    throw new Error("ZIP으로 묶을 썸네일 배경이 없습니다.");
+  }
+
+  downloadZipFiles(
+    `${createSafeBaseName(title)}_썸네일배경_2안.zip`,
+    backgrounds.map((background) => ({
+      name: `thumbnail-backgrounds/${background.fileName}`,
+      bytes: dataUrlToBytes(background.imageDataUrl)
+    }))
+  );
+}
+
 export function downloadFinalZip({
   title,
   decoratedTitle,
   titleOnly,
   actualIcons,
-  recommendedIcons
+  recommendedIcons,
+  thumbnailBackgrounds
 }: {
   title: string;
   decoratedTitle: GeneratedImage;
   titleOnly: GeneratedImage;
   actualIcons: GeneratedIconAsset[];
   recommendedIcons: GeneratedIconAsset[];
+  thumbnailBackgrounds?: GeneratedBackgroundAsset[];
 }) {
   downloadZipFiles(`${createSafeBaseName(title)}_최종결과.zip`, [
     {
@@ -83,6 +99,10 @@ export function downloadFinalZip({
     ...recommendedIcons.map((icon) => ({
       name: `recommended-icons/${icon.fileName.replace(/^recommended_/, "")}`,
       bytes: dataUrlToBytes(icon.imageDataUrl)
+    })),
+    ...(thumbnailBackgrounds ?? []).map((background) => ({
+      name: `thumbnail-backgrounds/${background.fileName}`,
+      bytes: dataUrlToBytes(background.imageDataUrl)
     }))
   ]);
 }

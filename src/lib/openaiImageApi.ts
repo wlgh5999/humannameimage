@@ -23,7 +23,7 @@ type RequestImageEditOptions = RequestImageGenerationOptions & {
   fileName?: string;
 };
 
-export function chooseImageModel(outputType?: OutputType | "recommended-icon") {
+export function chooseImageModel(outputType?: OutputType | "recommended-icon" | "thumbnail-background") {
   void outputType;
 
   if (process.env.OPENAI_IMAGE_MODEL) {

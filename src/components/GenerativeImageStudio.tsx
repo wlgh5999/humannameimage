@@ -12,10 +12,11 @@ import {
 } from "@/lib/generativeOptions";
 import { getActualIconSpecs, getRecommendedIconSpecs } from "@/lib/iconAssets";
 import { createDownloadName, createSafeBaseName, downloadDataUrl } from "@/lib/imageDownload";
-import { downloadAllIconsZip, downloadFinalZip, downloadIconZip } from "@/lib/zipDownload";
+import { downloadAllIconsZip, downloadBackgroundZip, downloadFinalZip, downloadIconZip } from "@/lib/zipDownload";
 import type {
   CandidateId,
   EducationImageForm,
+  GeneratedBackgroundAsset,
   GeneratedCandidateSet,
   GeneratedIconAsset,
   GeneratedImage,
@@ -24,7 +25,8 @@ import type {
   IconSpec,
   ImageSize,
   OutputType,
-  PngValidationStatus
+  PngValidationStatus,
+  ThumbnailBackgroundSpec
 } from "@/lib/generativeTypes";
 
 const sampleOne: EducationImageForm = {
@@ -76,6 +78,7 @@ type FlowState =
   | "analyzing-icons"
   | "extracting-icons"
   | "generating-recommended"
+  | "generating-backgrounds"
   | "complete";
 type ResultStatus = "idle" | "generating" | "success" | "error";
 
@@ -104,6 +107,13 @@ type IconResult = {
   error?: string;
 };
 
+type BackgroundResult = {
+  spec: ThumbnailBackgroundSpec;
+  status: ResultStatus;
+  background?: GeneratedBackgroundAsset;
+  error?: string;
+};
+
 type TimingEntry = {
   label: string;
   ms: number;
@@ -116,6 +126,7 @@ type RequestImageOptions = {
 
 const primaryOutputOrder: OutputType[] = ["decorated-title", "title-only"];
 const checkerboardFailureMessage = "실제 투명 배경이 아닌 체크무늬가 감지되었습니다.";
+const thumbnailBackgroundSize = { width: 1920, height: 1440 };
 
 const initialResults = (): Record<OutputType, ImageResult> => ({
   "decorated-title": { outputType: "decorated-title", status: "idle" },
@@ -148,6 +159,7 @@ export function GenerativeImageStudio() {
   const [results, setResults] = useState<Record<OutputType, ImageResult>>(initialResults);
   const [actualIcons, setActualIcons] = useState<IconResult[]>([]);
   const [recommendedIcons, setRecommendedIcons] = useState<IconResult[]>([]);
+  const [thumbnailBackgrounds, setThumbnailBackgrounds] = useState<BackgroundResult[]>([]);
   const [dailyCount, setDailyCount] = useState(0);
   const [isGenerating, setIsGenerating] = useState(false);
   const [progressText, setProgressText] = useState("");
@@ -160,11 +172,16 @@ export function GenerativeImageStudio() {
   const selectedCandidate = selectedCandidateId ? candidates[selectedCandidateId] : null;
   const validActualIcons = actualIcons.map((result) => result.icon).filter(isValidIconAsset);
   const validRecommendedIcons = recommendedIcons.map((result) => result.icon).filter(isValidIconAsset);
+  const validThumbnailBackgrounds = thumbnailBackgrounds
+    .map((result) => result.background)
+    .filter(isValidBackgroundAsset);
   const primaryResultsReady = primaryOutputOrder.every((outputType) => isValidTransparentImage(results[outputType].image));
   const actualIconsReady = actualIcons.length > 0 && actualIcons.every((result) => isValidIconAsset(result.icon));
   const recommendedIconsReady =
     recommendedIcons.length === 3 && recommendedIcons.every((result) => isValidIconAsset(result.icon));
-  const finalZipReady = primaryResultsReady && actualIconsReady && recommendedIconsReady;
+  const thumbnailBackgroundsReady =
+    thumbnailBackgrounds.length === 2 && thumbnailBackgrounds.every((result) => isValidBackgroundAsset(result.background));
+  const finalZipReady = primaryResultsReady && actualIconsReady && recommendedIconsReady && thumbnailBackgroundsReady;
 
   useEffect(() => {
     const storedCount = Number(window.localStorage.getItem(todayKey) ?? "0");
@@ -193,10 +210,11 @@ export function GenerativeImageStudio() {
       setResults(initialResults());
       setActualIcons([]);
       setRecommendedIcons([]);
+      setThumbnailBackgrounds([]);
       setCandidates(markAllCandidates("generating"));
       setFlowState("generating-candidates");
       setIsGenerating(true);
-      setProgressText("1/6 꾸민 제목 1안과 2안을 만들고 있어요...");
+      setProgressText("1/7 꾸민 제목 1안과 2안을 만들고 있어요...");
 
       const promptStartedAt = performance.now();
       const promptResponse = await fetch("/api/generate-candidates", {
@@ -264,7 +282,7 @@ export function GenerativeImageStudio() {
       }
 
       setFlowState("awaiting-selection");
-      setProgressText("2/6 원하는 시안을 선택해주세요.");
+      setProgressText("2/7 원하는 시안을 선택해주세요.");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "제목 시안 생성에 실패했습니다.");
       setProgressText("");
@@ -285,9 +303,10 @@ export function GenerativeImageStudio() {
     setPromptSet(candidate.promptSet);
     setActualIcons([]);
     setRecommendedIcons([]);
+    setThumbnailBackgrounds([]);
     setFlowState("generating-title");
     setIsGenerating(true);
-    setProgressText("3/6 선택한 디자인에서 제목만 분리하고 있어요...");
+    setProgressText("3/7 선택한 디자인에서 제목만 분리하고 있어요...");
 
     const nextResults = initialResults();
     nextResults["decorated-title"] = {
@@ -320,12 +339,12 @@ export function GenerativeImageStudio() {
       }
 
       setFlowState("analyzing-icons");
-      setProgressText("4/6 실제 사용 아이콘을 분석하고 있어요...");
+      setProgressText("4/7 실제 사용 아이콘을 분석하고 있어요...");
       const actualSpecs = getActualIconSpecs(candidate.promptSet.designSpec.decorations);
       setActualIcons(actualSpecs.map((spec) => ({ kind: "actual", spec, status: "generating" })));
 
       setFlowState("extracting-icons");
-      setProgressText("5/6 실제 사용 아이콘을 각각 분리하고 있어요...");
+      setProgressText("5/7 실제 사용 아이콘을 각각 분리하고 있어요...");
       const actualStartedAt = performance.now();
       const extractedActualIcons = await requestActualIcons(
         iconsOnlyEntry.image.imageDataUrl,
@@ -336,8 +355,9 @@ export function GenerativeImageStudio() {
       addTiming("Actual icon component splitting", performance.now() - actualStartedAt);
 
       setFlowState("generating-recommended");
-      setProgressText("6/6 같은 스타일의 추천 아이콘 3개를 만들고 있어요...");
-      const recommendedSpecs = getRecommendedIconSpecs(normalizeForm(form, false), candidate.promptSet.designSpec, actualSpecs);
+      setProgressText("6/7 같은 스타일의 추천 아이콘 3개를 만들고 있어요...");
+      const currentForm = normalizeForm(form, false);
+      const recommendedSpecs = getRecommendedIconSpecs(currentForm, candidate.promptSet.designSpec, actualSpecs);
       setRecommendedIcons(recommendedSpecs.map((spec) => ({ kind: "recommended", spec, status: "generating" })));
 
       const recommendedStartedAt = performance.now();
@@ -349,7 +369,7 @@ export function GenerativeImageStudio() {
               selectedImage: candidate.image as GeneratedImage,
               actualIconNames: extractedActualIcons.map((icon) => icon.name),
               promptSet: candidate.promptSet as GeneratedPromptSet,
-              form: normalizeForm(form, false)
+              form: currentForm
             });
             return { kind: "recommended" as const, spec, status: "success" as const, icon };
           } catch (caught) {
@@ -364,6 +384,38 @@ export function GenerativeImageStudio() {
       );
       setRecommendedIcons(recommendedEntries);
       addTiming("Recommended icon parallel generation", performance.now() - recommendedStartedAt);
+
+      setFlowState("generating-backgrounds");
+      setProgressText("7/7 마지막으로 제목에 어울리는 썸네일 배경 2안을 만들고 있어요...");
+      const backgroundSpecs = getThumbnailBackgroundSpecs();
+      setThumbnailBackgrounds(backgroundSpecs.map((spec) => ({ spec, status: "generating" })));
+
+      const backgroundStartedAt = performance.now();
+      const generatedRecommendedIcons = recommendedEntries.map((entry) => entry.icon).filter(isValidIconAsset);
+      const backgroundEntries = await Promise.all(
+        backgroundSpecs.map(async (spec) => {
+          try {
+            const background = await requestThumbnailBackground({
+              spec,
+              selectedImage: candidate.image as GeneratedImage,
+              actualIconNames: extractedActualIcons.map((icon) => icon.name),
+              recommendedIconNames: generatedRecommendedIcons.map((icon) => icon.name),
+              promptSet: candidate.promptSet as GeneratedPromptSet,
+              form: currentForm
+            });
+
+            return { spec, status: "success" as const, background };
+          } catch (caught) {
+            return {
+              spec,
+              status: "error" as const,
+              error: caught instanceof Error ? caught.message : `${spec.label} 썸네일 배경 생성에 실패했습니다.`
+            };
+          }
+        })
+      );
+      setThumbnailBackgrounds(backgroundEntries);
+      addTiming("Thumbnail background parallel generation", performance.now() - backgroundStartedAt);
       addTiming("Total", performance.now() - runStartedAtRef.current);
 
       setFlowState("complete");
@@ -420,7 +472,7 @@ export function GenerativeImageStudio() {
       }));
       addTiming(`${candidateLabelMap[candidateId]} retry generation`, performance.now() - startedAt);
       setFlowState("awaiting-selection");
-      setProgressText("2/6 원하는 시안을 선택해주세요.");
+      setProgressText("2/7 원하는 시안을 선택해주세요.");
     } catch (caught) {
       setCandidates((current) => ({
         ...current,
@@ -544,6 +596,51 @@ export function GenerativeImageStudio() {
     }
   };
 
+  const regenerateThumbnailBackground = async (index: number) => {
+    const result = thumbnailBackgrounds[index];
+    if (isGenerating || !result || !selectedCandidate?.image || !promptSet) {
+      return;
+    }
+
+    setIsGenerating(true);
+    setFlowState("generating-backgrounds");
+    setProgressText(`${result.spec.label} 썸네일 배경을 다시 만들고 있어요...`);
+    setThumbnailBackgrounds((current) =>
+      current.map((item, itemIndex) => (itemIndex === index ? { ...item, status: "generating", error: undefined } : item))
+    );
+
+    try {
+      const background = await requestThumbnailBackground({
+        spec: result.spec,
+        selectedImage: selectedCandidate.image,
+        actualIconNames: validActualIcons.map((iconAsset) => iconAsset.name),
+        recommendedIconNames: validRecommendedIcons.map((iconAsset) => iconAsset.name),
+        promptSet,
+        form: normalizeForm(form, false)
+      });
+      setThumbnailBackgrounds((current) =>
+        current.map((item, itemIndex) => (itemIndex === index ? { ...item, status: "success", background } : item))
+      );
+      setFlowState("complete");
+      setProgressText("썸네일 배경을 다시 생성했습니다.");
+    } catch (caught) {
+      setThumbnailBackgrounds((current) =>
+        current.map((item, itemIndex) =>
+          itemIndex === index
+            ? {
+                ...item,
+                status: "error",
+                error: caught instanceof Error ? caught.message : "썸네일 배경을 다시 생성하지 못했습니다."
+              }
+            : item
+        )
+      );
+      setFlowState("complete");
+    } finally {
+      setIsGenerating(false);
+    }
+  };
+
   const logout = async () => {
     await fetch("/api/auth/logout", { method: "POST" });
     window.location.href = "/login";
@@ -555,7 +652,7 @@ export function GenerativeImageStudio() {
       const titleOnly = results["title-only"].image;
 
       if (!finalZipReady || !decoratedTitle || !titleOnly) {
-        throw new Error("모든 결과가 실제 투명 PNG 검증을 통과한 뒤 최종 ZIP 다운로드가 가능합니다.");
+        throw new Error("제목, 아이콘, 썸네일 배경이 모두 준비된 뒤 최종 ZIP 다운로드가 가능합니다.");
       }
 
       downloadFinalZip({
@@ -563,7 +660,8 @@ export function GenerativeImageStudio() {
         decoratedTitle,
         titleOnly,
         actualIcons: validActualIcons,
-        recommendedIcons: validRecommendedIcons
+        recommendedIcons: validRecommendedIcons,
+        thumbnailBackgrounds: validThumbnailBackgrounds
       });
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "ZIP 다운로드에 실패했습니다.");
@@ -594,6 +692,14 @@ export function GenerativeImageStudio() {
     }
   };
 
+  const downloadBackgroundsZip = () => {
+    try {
+      downloadBackgroundZip(form.title, validThumbnailBackgrounds);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "썸네일 배경 ZIP 다운로드에 실패했습니다.");
+    }
+  };
+
   return (
     <main className="min-h-screen p-3 md:p-6">
       <div className="mx-auto grid max-w-[1540px] gap-4 lg:grid-cols-[470px_minmax(0,1fr)]">
@@ -613,7 +719,7 @@ export function GenerativeImageStudio() {
               </button>
             </div>
             <p className="mt-2 text-sm font-medium leading-6 text-slate-500">
-              품질은 항상 high로 유지합니다. 선택한 시안에서 제목과 실제 사용 아이콘을 분리하고 추천 아이콘을 생성합니다.
+              품질은 항상 high로 유지합니다. 선택한 시안에서 제목과 아이콘을 분리하고 어울리는 썸네일 배경까지 추천합니다.
             </p>
           </header>
 
@@ -766,6 +872,7 @@ export function GenerativeImageStudio() {
           flowState === "analyzing-icons" ||
           flowState === "extracting-icons" ||
           flowState === "generating-recommended" ||
+          flowState === "generating-backgrounds" ||
           flowState === "complete" ? (
             <>
               <section className="mt-5">
@@ -827,9 +934,28 @@ export function GenerativeImageStudio() {
                 />
               </IconSection>
 
+              <IconSection
+                title="추천 썸네일 배경"
+                description="선택한 제목 디자인의 색상과 분위기에 맞춘 1920 x 1440px 배경 2안입니다. 제목 PNG를 얹기 좋은 여백을 남깁니다."
+                zipLabel="썸네일 배경 2안 ZIP"
+                zipDisabled={
+                  validThumbnailBackgrounds.length === 0 || validThumbnailBackgrounds.length !== thumbnailBackgrounds.length
+                }
+                onZipDownload={downloadBackgroundsZip}
+              >
+                <BackgroundGrid
+                  emptyText="추천 아이콘 생성 후 제목에 어울리는 썸네일 배경 2안이 생성됩니다."
+                  results={thumbnailBackgrounds}
+                  onRetry={regenerateThumbnailBackground}
+                />
+              </IconSection>
+
               <div className="mt-4 flex flex-wrap gap-2 rounded-lg bg-white p-3">
                 <ActionButton disabled={validActualIcons.length + validRecommendedIcons.length === 0} onClick={downloadIconsZip}>
                   모든 아이콘 ZIP 다운로드
+                </ActionButton>
+                <ActionButton disabled={validThumbnailBackgrounds.length === 0} onClick={downloadBackgroundsZip}>
+                  썸네일 배경 ZIP 다운로드
                 </ActionButton>
                 <ActionButton disabled={!finalZipReady} onClick={downloadWholeZip}>
                   최종 전체 ZIP 다운로드
@@ -852,6 +978,7 @@ export function GenerativeImageStudio() {
     setResults(initialResults());
     setActualIcons([]);
     setRecommendedIcons([]);
+    setThumbnailBackgrounds([]);
     setError("");
     setProgressText("");
     setTimings([]);
@@ -965,6 +1092,47 @@ async function requestRecommendedIcon({
   }
 
   return data.icon as GeneratedIconAsset;
+}
+
+async function requestThumbnailBackground({
+  spec,
+  selectedImage,
+  actualIconNames,
+  recommendedIconNames,
+  promptSet,
+  form
+}: {
+  spec: ThumbnailBackgroundSpec;
+  selectedImage: GeneratedImage;
+  actualIconNames: string[];
+  recommendedIconNames: string[];
+  promptSet: GeneratedPromptSet;
+  form: EducationImageForm;
+}) {
+  const response = await fetch("/api/generate-thumbnail-background", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      form,
+      designSpec: promptSet.designSpec,
+      backgroundSpec: spec,
+      sourceImageId: selectedImage.id,
+      actualIconNames,
+      recommendedIconNames
+    })
+  });
+  const data = await response.json();
+
+  if (response.status === 401) {
+    window.location.href = "/login";
+    throw new Error("인증이 만료되었습니다.");
+  }
+
+  if (!response.ok) {
+    throw new Error(data.error ?? "썸네일 배경 생성에 실패했습니다.");
+  }
+
+  return data.background as GeneratedBackgroundAsset;
 }
 
 function toIconResults(kind: IconAssetKind, specs: IconSpec[], icons: GeneratedIconAsset[]): IconResult[] {
@@ -1249,6 +1417,88 @@ function IconCard({ result, onRetry }: { result: IconResult; onRetry: () => void
   );
 }
 
+function BackgroundGrid({
+  results,
+  emptyText,
+  onRetry
+}: {
+  results: BackgroundResult[];
+  emptyText: string;
+  onRetry: (index: number) => void;
+}) {
+  if (results.length === 0) {
+    return (
+      <div className="rounded-lg border border-dashed border-slate-300 bg-white/70 p-5 text-sm font-bold text-slate-400">
+        {emptyText}
+      </div>
+    );
+  }
+
+  return (
+    <div className="grid gap-4 xl:grid-cols-2">
+      {results.map((result, index) => (
+        <BackgroundCard key={`${result.spec.id}-${index}`} result={result} onRetry={() => onRetry(index)} />
+      ))}
+    </div>
+  );
+}
+
+function BackgroundCard({ result, onRetry }: { result: BackgroundResult; onRetry: () => void }) {
+  const background = result.background;
+  const canDownload = isValidBackgroundAsset(background);
+
+  return (
+    <article className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
+      <div className="flex aspect-[4/3] min-h-[240px] items-center justify-center bg-slate-50 p-2">
+        {result.status === "success" && background ? (
+          <img
+            alt={`추천 썸네일 배경 ${result.spec.label} 미리보기`}
+            className="h-full w-full rounded-md object-cover"
+            src={background.imageDataUrl}
+          />
+        ) : result.status === "generating" ? (
+          <p className="text-sm font-extrabold text-slate-500">{result.spec.label} 배경 생성 중...</p>
+        ) : result.status === "error" ? (
+          <p className="px-4 text-center text-sm font-bold leading-6 text-red-600">{result.error}</p>
+        ) : (
+          <p className="text-sm font-bold text-slate-400">대기 중입니다.</p>
+        )}
+      </div>
+
+      <div className="space-y-3 p-4">
+        <div>
+          <p className="mb-1 inline-flex rounded-full bg-[#F8F4EC] px-2.5 py-1 text-[11px] font-black text-[#527d79]">
+            {result.spec.direction}
+          </p>
+          <h4 className="font-extrabold tracking-[-0.03em] text-slate-900">썸네일 배경 - {result.spec.label}</h4>
+          <p className="mt-1 text-xs font-bold leading-5 text-slate-400">
+            {thumbnailBackgroundSize.width} x {thumbnailBackgroundSize.height}px · high · 제목 PNG 배치용 여백 포함
+          </p>
+        </div>
+
+        {background ? (
+          <p className="text-xs font-bold text-slate-400">
+            {background.model} · {background.operation} · {formatSeconds(background.timings?.totalMs ?? 0)}
+          </p>
+        ) : null}
+
+        <div className="flex flex-wrap gap-2">
+          <ActionButton
+            disabled={!canDownload}
+            onClick={() => {
+              if (!background || !canDownload) return;
+              downloadDataUrl(background.imageDataUrl, background.fileName);
+            }}
+          >
+            PNG 다운로드
+          </ActionButton>
+          <ActionButton onClick={onRetry}>이 배경만 다시 생성</ActionButton>
+        </div>
+      </div>
+    </article>
+  );
+}
+
 function ValidationMeta({ image, icon }: { image?: GeneratedImage; icon?: GeneratedIconAsset }) {
   const validationStatus = image?.validationStatus ?? icon?.validationStatus;
   const validation = image?.validation ?? icon?.validation;
@@ -1329,19 +1579,20 @@ function EmptyPrompt() {
 
 function FlowSteps({ state }: { state: FlowState }) {
   const steps: Array<{ state: FlowState; label: string; description: string }> = [
-    { state: "idle", label: "1/6", description: "초기 입력" },
-    { state: "generating-candidates", label: "1/6", description: "시안 2안 동시 생성" },
-    { state: "awaiting-selection", label: "2/6", description: "시안 선택" },
-    { state: "generating-title", label: "3/6", description: "제목만 분리" },
-    { state: "analyzing-icons", label: "4/6", description: "아이콘 분석" },
-    { state: "extracting-icons", label: "5/6", description: "아이콘 개별 분리" },
-    { state: "generating-recommended", label: "6/6", description: "추천 아이콘 생성" },
+    { state: "idle", label: "1/7", description: "초기 입력" },
+    { state: "generating-candidates", label: "1/7", description: "시안 2안 동시 생성" },
+    { state: "awaiting-selection", label: "2/7", description: "시안 선택" },
+    { state: "generating-title", label: "3/7", description: "제목만 분리" },
+    { state: "analyzing-icons", label: "4/7", description: "아이콘 분석" },
+    { state: "extracting-icons", label: "5/7", description: "아이콘 개별 분리" },
+    { state: "generating-recommended", label: "6/7", description: "추천 아이콘 생성" },
+    { state: "generating-backgrounds", label: "7/7", description: "썸네일 배경 생성" },
     { state: "complete", label: "완료", description: "최종 결과 표시" }
   ];
   const activeIndex = steps.findIndex((step) => step.state === state);
 
   return (
-    <div className="grid gap-2 rounded-lg border border-slate-200 bg-white p-3 md:grid-cols-4 xl:grid-cols-8">
+    <div className="grid gap-2 rounded-lg border border-slate-200 bg-white p-3 md:grid-cols-3 xl:grid-cols-9">
       {steps.map((step, index) => {
         const isActive = index === activeIndex;
         const isDone = index < activeIndex;
@@ -1484,6 +1735,27 @@ function markAllCandidates(status: ResultStatus): Record<CandidateId, CandidateR
   };
 }
 
+function getThumbnailBackgroundSpecs(): ThumbnailBackgroundSpec[] {
+  return [
+    {
+      id: "thumbnail-background-1",
+      label: "1안",
+      direction: "따뜻하고 부드러운 배경",
+      promptFocus: "warm airy organic background, soft curves, gentle connection lines, subtle dots near the edges",
+      fileLabel: "thumbnail_background_01_warm",
+      index: 0
+    },
+    {
+      id: "thumbnail-background-2",
+      label: "2안",
+      direction: "정돈되고 전문적인 배경",
+      promptFocus: "clean editorial background, balanced margins, refined geometric accents, calm professional rhythm",
+      fileLabel: "thumbnail_background_02_clean",
+      index: 1
+    }
+  ];
+}
+
 function getTodayStorageKey() {
   const today = new Date().toLocaleDateString("sv-SE", { timeZone: "Asia/Seoul" });
   return `education-image-generation-set-count:${today}`;
@@ -1523,6 +1795,14 @@ function isValidTransparentImage(image?: GeneratedImage) {
 
 function isValidIconAsset(icon?: GeneratedIconAsset): icon is GeneratedIconAsset {
   return icon?.validationStatus === "VALID_TRANSPARENT_PNG";
+}
+
+function isValidBackgroundAsset(background?: GeneratedBackgroundAsset): background is GeneratedBackgroundAsset {
+  return Boolean(
+    background?.imageDataUrl &&
+      background.width === thumbnailBackgroundSize.width &&
+      background.height === thumbnailBackgroundSize.height
+  );
 }
 
 function getValidationLabel(status?: PngValidationStatus) {

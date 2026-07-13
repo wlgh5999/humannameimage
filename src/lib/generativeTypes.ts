@@ -123,6 +123,15 @@ export interface IconSpec {
   index: number;
 }
 
+export interface ThumbnailBackgroundSpec {
+  id: string;
+  label: string;
+  direction: string;
+  promptFocus: string;
+  fileLabel: string;
+  index: number;
+}
+
 export interface GeneratedIconAsset {
   id: string;
   kind: IconAssetKind;
@@ -145,6 +154,29 @@ export interface GeneratedIconAsset {
   retryCount?: number;
   timings?: {
     openaiMs?: number;
+    processingMs: number;
+    totalMs: number;
+  };
+}
+
+export interface GeneratedBackgroundAsset {
+  id: string;
+  spec: ThumbnailBackgroundSpec;
+  label: string;
+  fileName: string;
+  imageDataUrl: string;
+  width: number;
+  height: number;
+  createdAt: string;
+  sourceImageId?: string;
+  model: string;
+  operation: "generation";
+  prompt: string;
+  revisedPrompt?: string;
+  usage?: unknown;
+  apiSize?: string;
+  timings?: {
+    openaiMs: number;
     processingMs: number;
     totalMs: number;
   };
