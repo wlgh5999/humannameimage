@@ -45,7 +45,11 @@ export function dataUrlToBuffer(dataUrl: string) {
   };
 }
 
-export async function prepareServerPng(base64Png: string, size: ImageSize) {
+export async function prepareServerPng(
+  base64Png: string,
+  size: ImageSize,
+  options: { punchOutInteriorLight?: boolean } = {}
+) {
   const startedAt = performance.now();
 
   try {
@@ -54,7 +58,16 @@ export async function prepareServerPng(base64Png: string, size: ImageSize) {
     const initialCheckerboard = detectCheckerboardFromEdges(decoded);
     const backgroundModel = getEdgeBackgroundModel(decoded);
     const removed = removeEdgeConnectedBackground(decoded, initialCheckerboard, backgroundModel);
-    const sourcePng = await rgbaToPng(removed.buffer, decoded.width, decoded.height);
+    const punched = options.punchOutInteriorLight
+      ? removeEnclosedLightIslands(
+          {
+            ...decoded,
+            data: removed.buffer
+          },
+          { preserveLargeDecorations: true }
+        )
+      : { buffer: removed.buffer, changedPixels: 0 };
+    const sourcePng = await rgbaToPng(punched.buffer, decoded.width, decoded.height);
     const { width, height } = parseImageSize(size);
     const output = await sharp(sourcePng, { density: 300 })
       .resize({
@@ -68,7 +81,7 @@ export async function prepareServerPng(base64Png: string, size: ImageSize) {
       .withMetadata({ density: 300 })
       .toBuffer();
     const validation = await validateTransparentPng(output, {
-      corrected: removed.changedPixels > 0,
+      corrected: removed.changedPixels + punched.changedPixels > 0,
       originalHadAlpha: decoded.hasAlphaChannel
     });
 
@@ -382,6 +395,95 @@ function removeEdgeConnectedBackground(
   return { buffer: bytes, changedPixels };
 }
 
+function removeEnclosedLightIslands(
+  image: RgbaImage,
+  options: { preserveLargeDecorations: boolean }
+): BackgroundRemovalResult {
+  const bytes = Buffer.from(image.data);
+  const { width, height } = image;
+  const totalPixels = width * height;
+  const visited = new Uint8Array(totalPixels);
+  const queue = new Int32Array(totalPixels);
+  let changedPixels = 0;
+
+  for (let pixelIndex = 0; pixelIndex < totalPixels; pixelIndex += 1) {
+    if (visited[pixelIndex] || !isInteriorHoleCandidate(bytes, pixelIndex * 4)) {
+      continue;
+    }
+
+    let head = 0;
+    let tail = 0;
+    let area = 0;
+    let touchesTransparentEdge = false;
+    let minX = width;
+    let minY = height;
+    let maxX = 0;
+    let maxY = 0;
+    const members: number[] = [];
+
+    visited[pixelIndex] = 1;
+    queue[tail] = pixelIndex;
+    tail += 1;
+
+    while (head < tail) {
+      const current = queue[head];
+      head += 1;
+      const x = current % width;
+      const y = Math.floor(current / width);
+      const byteIndex = current * 4;
+
+      members.push(current);
+      area += 1;
+      minX = Math.min(minX, x);
+      minY = Math.min(minY, y);
+      maxX = Math.max(maxX, x);
+      maxY = Math.max(maxY, y);
+
+      if (x === 0 || y === 0 || x === width - 1 || y === height - 1 || bytes[byteIndex + 3] <= 8) {
+        touchesTransparentEdge = true;
+      }
+
+      const neighbors = [current - 1, current + 1, current - width, current + width];
+      for (const neighbor of neighbors) {
+        if (neighbor < 0 || neighbor >= totalPixels || visited[neighbor]) {
+          continue;
+        }
+
+        const nx = neighbor % width;
+        const ny = Math.floor(neighbor / width);
+        if (Math.abs(nx - x) + Math.abs(ny - y) !== 1 || !isInteriorHoleCandidate(bytes, neighbor * 4)) {
+          continue;
+        }
+
+        visited[neighbor] = 1;
+        queue[tail] = neighbor;
+        tail += 1;
+      }
+    }
+
+    const boxWidth = maxX - minX + 1;
+    const boxHeight = maxY - minY + 1;
+    const maxRemovableArea = Math.max(1800, Math.round(totalPixels * 0.0035));
+    const isLongUnderline = boxWidth > width * 0.28 && boxWidth / Math.max(1, boxHeight) > 7;
+    const keepAsDecoration =
+      options.preserveLargeDecorations && (area > maxRemovableArea || isLongUnderline || boxHeight > height * 0.2);
+
+    if (touchesTransparentEdge || keepAsDecoration || area < 18) {
+      continue;
+    }
+
+    for (const member of members) {
+      const byteIndex = member * 4;
+      if (bytes[byteIndex + 3] !== 0) {
+        bytes[byteIndex + 3] = 0;
+        changedPixels += 1;
+      }
+    }
+  }
+
+  return { buffer: bytes, changedPixels };
+}
+
 function isBackgroundCandidate(
   bytes: Buffer,
   byteIndex: number,
@@ -410,6 +512,18 @@ function isBackgroundCandidate(
   }
 
   return backgroundModel.colors.some((color) => colorDistance(color, [red, green, blue]) <= 38);
+}
+
+function isInteriorHoleCandidate(bytes: Buffer, byteIndex: number) {
+  const red = bytes[byteIndex];
+  const green = bytes[byteIndex + 1];
+  const blue = bytes[byteIndex + 2];
+  const alpha = bytes[byteIndex + 3];
+  const minChannel = Math.min(red, green, blue);
+  const maxChannel = Math.max(red, green, blue);
+  const chroma = maxChannel - minChannel;
+
+  return alpha > 32 && minChannel >= 155 && chroma <= 48;
 }
 
 function getEdgeBackgroundModel(image: RgbaImage): EdgeBackgroundModel {

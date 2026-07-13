@@ -1259,7 +1259,7 @@ function ValidationMeta({ image, icon }: { image?: GeneratedImage; icon?: Genera
     <p className={`text-xs font-extrabold ${isValid ? "text-[#527d79]" : "text-red-600"}`}>
       {getValidationLabel(validationStatus)}
       {corrected ? " · 자동 보정됨" : ""}
-      {validation ? ` · 투명 ${formatPercent(validation.transparentPixelRatio)}` : ""}
+      {validation ? ` · 빈 배경 면적 ${formatPercent(validation.transparentPixelRatio)}` : ""}
     </p>
   );
 }

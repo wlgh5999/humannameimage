@@ -73,6 +73,7 @@ export async function POST(request: Request) {
       inputImageDataUrl: body.inputImageDataUrl,
       isEdit,
       model,
+      outputType: prompt.outputType,
       promptSize: prompt.size,
       transparentRequested
     });
@@ -85,6 +86,7 @@ export async function POST(request: Request) {
         inputImageDataUrl: body.inputImageDataUrl,
         isEdit,
         model,
+        outputType: prompt.outputType,
         promptSize: prompt.size,
         transparentRequested
       });
@@ -150,6 +152,7 @@ async function requestAndProcessImage({
   inputImageDataUrl,
   isEdit,
   model,
+  outputType,
   promptSize,
   transparentRequested
 }: {
@@ -158,6 +161,7 @@ async function requestAndProcessImage({
   inputImageDataUrl?: string;
   isEdit: boolean;
   model: string;
+  outputType: GeneratedPrompt["outputType"];
   promptSize: GeneratedPrompt["size"];
   transparentRequested: boolean;
 }) {
@@ -179,7 +183,9 @@ async function requestAndProcessImage({
     throw new Error("OpenAI 응답에 이미지 데이터가 없습니다.");
   }
 
-  const processed = await prepareServerPng(b64, promptSize);
+  const processed = await prepareServerPng(b64, promptSize, {
+    punchOutInteriorLight: outputType !== "icons-only"
+  });
 
   return {
     data,

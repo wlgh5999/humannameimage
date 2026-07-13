@@ -226,6 +226,11 @@ const sharedAvoid = [
   "frame",
   "official logo",
   "heavy 3D",
+  "3D bevel",
+  "glossy highlights",
+  "white inner letter fills",
+  "painted counters inside letters",
+  "drop shadow clutter",
   "aggressive comic logo",
   "distorted Korean letters",
   "tiny unreadable decorations",
@@ -408,6 +413,9 @@ function createImagePrompt(form: EducationImageForm, spec: DesignSpec, outputTyp
     "Create an isolated reusable Korean education-promotion PNG asset.",
     trueTransparencyRules,
     "The final image must be title-centered, readable in Korean, and not crowded.",
+    "Use flatter clean display lettering, not glossy 3D lettering.",
+    "Do not fill empty counters or inner holes of Korean letters with white or gray paint; those empty spaces must be transparent alpha.",
+    "Avoid heavy black shadows, stacked outline noise, bevels, shine streaks, and glossy highlights.",
     "Use only a small amount of decoration.",
     "No people, no human characters, no scene, no photo, no card background, no frame, no banner rectangle.",
     `Avoid: ${spec.avoid.join(", ")}.`
@@ -423,6 +431,7 @@ function createImagePrompt(form: EducationImageForm, spec: DesignSpec, outputTyp
       "Use the title as the dominant element. Add only the listed small icons/decorations.",
       "Decorated title output must contain only the Korean headline plus a few small matching decorative icons.",
       "No people, no scene, no card, no panel, no opaque background, no checkerboard.",
+      "Inside empty spaces of Hangul glyphs such as ㅇ, ㅁ, ㅂ, ㅎ, and counters must be actual transparent alpha, not white fill.",
       "Do not add subtitle text, body text, labels, badges, or extra readable words.",
       "Quality must be high."
     ].join("\n");
@@ -448,6 +457,7 @@ function createImagePrompt(form: EducationImageForm, spec: DesignSpec, outputTyp
       "- No checkerboard.",
       "- No white or gray background.",
       "- All pixels outside the headline must have alpha = 0.",
+      "- Empty holes/counters inside the Korean title glyphs must also have alpha = 0.",
       "- Keep only the intended title glyphs and text effects.",
       "- Production-ready PNG for Canva.",
       `Keep only the Korean title lettering exactly as shown in the input image: "${title}".`,
