@@ -89,9 +89,13 @@ export interface GeneratedCandidateSet {
 
 export type PngValidationStatus =
   | "VALID_TRANSPARENT_PNG"
+  | "BACKGROUND_REMOVAL_APPLIED"
   | "CHECKERBOARD_DETECTED"
   | "NO_ALPHA_CHANNEL"
   | "LOW_TRANSPARENCY"
+  | "WHITE_BACKGROUND_DETECTED"
+  | "GRAY_BACKGROUND_DETECTED"
+  | "BACKGROUND_REMAINS"
   | "PROCESSING_FAILED";
 
 export interface PngValidationResult {
@@ -101,8 +105,49 @@ export interface PngValidationResult {
   checkerboardDetected: boolean;
   checkerboardAlternatingRatio?: number;
   checkerboardColors?: string[];
+  edgeOpaquePixelRatio?: number;
+  backgroundDetected?: boolean;
   corrected: boolean;
   message?: string;
+}
+
+export type IconAssetKind = "actual" | "recommended";
+
+export interface IconSpec {
+  id: string;
+  name: string;
+  slug: string;
+  promptLabel: string;
+  fileLabel: string;
+  sourceDecoration?: string;
+  index: number;
+}
+
+export interface GeneratedIconAsset {
+  id: string;
+  kind: IconAssetKind;
+  spec: IconSpec;
+  name: string;
+  slug: string;
+  fileName: string;
+  imageDataUrl: string;
+  width: number;
+  height: number;
+  createdAt: string;
+  sourceImageId?: string;
+  sourceComponentIndex?: number;
+  model?: string;
+  operation?: "server-extract" | "edit" | "generation";
+  prompt?: string;
+  validationStatus?: PngValidationStatus;
+  validation?: PngValidationResult;
+  corrected?: boolean;
+  retryCount?: number;
+  timings?: {
+    openaiMs?: number;
+    processingMs: number;
+    totalMs: number;
+  };
 }
 
 export interface GeneratedImage {

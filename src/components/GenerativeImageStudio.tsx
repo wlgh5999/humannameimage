@@ -6,23 +6,26 @@ import {
   candidateLabelMap,
   candidateOrder,
   defaultImageSize,
-  outputOrder,
   outputTypeDescriptionMap,
   outputTypeLabelMap,
   sizeOptions
 } from "@/lib/generativeOptions";
+import { getActualIconSpecs, getRecommendedIconSpecs } from "@/lib/iconAssets";
+import { createDownloadName, createSafeBaseName, downloadDataUrl } from "@/lib/imageDownload";
+import { downloadAllIconsZip, downloadFinalZip, downloadIconZip } from "@/lib/zipDownload";
 import type {
   CandidateId,
   EducationImageForm,
   GeneratedCandidateSet,
+  GeneratedIconAsset,
   GeneratedImage,
   GeneratedPromptSet,
+  IconAssetKind,
+  IconSpec,
   ImageSize,
   OutputType,
   PngValidationStatus
 } from "@/lib/generativeTypes";
-import { createDownloadName, createSafeBaseName, downloadDataUrl } from "@/lib/imageDownload";
-import { downloadImageZip } from "@/lib/zipDownload";
 
 const sampleOne: EducationImageForm = {
   title: "사례관리, 상담 기술로 전문성을 더하다",
@@ -65,7 +68,15 @@ const sampleTwo: EducationImageForm = {
   styleSeed: 2
 };
 
-type FlowState = "idle" | "generating-candidates" | "awaiting-selection" | "generating-derivatives" | "complete";
+type FlowState =
+  | "idle"
+  | "generating-candidates"
+  | "awaiting-selection"
+  | "generating-title"
+  | "analyzing-icons"
+  | "extracting-icons"
+  | "generating-recommended"
+  | "complete";
 type ResultStatus = "idle" | "generating" | "success" | "error";
 
 type ImageResult = {
@@ -85,6 +96,14 @@ type CandidateResult = {
   error?: string;
 };
 
+type IconResult = {
+  kind: IconAssetKind;
+  spec: IconSpec;
+  status: ResultStatus;
+  icon?: GeneratedIconAsset;
+  error?: string;
+};
+
 type TimingEntry = {
   label: string;
   ms: number;
@@ -95,9 +114,8 @@ type RequestImageOptions = {
   sourceImageId?: string;
 };
 
-const derivativeOrder: OutputType[] = ["title-only", "icons-only"];
-const checkerboardFailureMessage =
-  "실제 투명 배경이 아닌 체크무늬가 감지되었습니다. 다시 생성하거나 자동 보정할 수 있습니다.";
+const primaryOutputOrder: OutputType[] = ["decorated-title", "title-only"];
+const checkerboardFailureMessage = "실제 투명 배경이 아닌 체크무늬가 감지되었습니다.";
 
 const initialResults = (): Record<OutputType, ImageResult> => ({
   "decorated-title": { outputType: "decorated-title", status: "idle" },
@@ -128,6 +146,8 @@ export function GenerativeImageStudio() {
   const [selectedCandidateId, setSelectedCandidateId] = useState<CandidateId | null>(null);
   const [promptSet, setPromptSet] = useState<GeneratedPromptSet | null>(null);
   const [results, setResults] = useState<Record<OutputType, ImageResult>>(initialResults);
+  const [actualIcons, setActualIcons] = useState<IconResult[]>([]);
+  const [recommendedIcons, setRecommendedIcons] = useState<IconResult[]>([]);
   const [dailyCount, setDailyCount] = useState(0);
   const [isGenerating, setIsGenerating] = useState(false);
   const [progressText, setProgressText] = useState("");
@@ -137,11 +157,14 @@ export function GenerativeImageStudio() {
 
   const todayKey = useMemo(() => getTodayStorageKey(), []);
   const candidateList = candidateOrder.map((candidateId) => candidates[candidateId]);
-  const successfulFinalResults = outputOrder
-    .map((outputType) => results[outputType])
-    .filter((result): result is ImageResult & { image: GeneratedImage } => isValidTransparentImage(result.image));
-  const finalSetReady = outputOrder.every((outputType) => isValidTransparentImage(results[outputType].image));
   const selectedCandidate = selectedCandidateId ? candidates[selectedCandidateId] : null;
+  const validActualIcons = actualIcons.map((result) => result.icon).filter(isValidIconAsset);
+  const validRecommendedIcons = recommendedIcons.map((result) => result.icon).filter(isValidIconAsset);
+  const primaryResultsReady = primaryOutputOrder.every((outputType) => isValidTransparentImage(results[outputType].image));
+  const actualIconsReady = actualIcons.length > 0 && actualIcons.every((result) => isValidIconAsset(result.icon));
+  const recommendedIconsReady =
+    recommendedIcons.length === 3 && recommendedIcons.every((result) => isValidIconAsset(result.icon));
+  const finalZipReady = primaryResultsReady && actualIconsReady && recommendedIconsReady;
 
   useEffect(() => {
     const storedCount = Number(window.localStorage.getItem(todayKey) ?? "0");
@@ -168,10 +191,12 @@ export function GenerativeImageStudio() {
       setSelectedCandidateId(null);
       setPromptSet(null);
       setResults(initialResults());
+      setActualIcons([]);
+      setRecommendedIcons([]);
       setCandidates(markAllCandidates("generating"));
       setFlowState("generating-candidates");
       setIsGenerating(true);
-      setProgressText("[1/3] 제목 시안 2안을 동시에 만들고 있어요...");
+      setProgressText("1/6 꾸민 제목 1안과 2안을 만들고 있어요...");
 
       const promptStartedAt = performance.now();
       const promptResponse = await fetch("/api/generate-candidates", {
@@ -224,18 +249,14 @@ export function GenerativeImageStudio() {
           }
         })
       );
-      const draftMs = performance.now() - draftStartedAt;
       const nextCandidates = initialCandidates();
-      let draftResizeMs = 0;
 
       for (const entry of candidateEntries) {
         nextCandidates[entry.candidateId] = entry.result;
-        draftResizeMs += entry.result.image?.timings?.resizeMs ?? 0;
       }
 
       setCandidates(nextCandidates);
-      addTiming("Draft 1 + Draft 2 parallel generation", draftMs);
-      addTiming("Server resize and PNG processing", draftResizeMs);
+      addTiming("Draft 1 + Draft 2 parallel generation", performance.now() - draftStartedAt);
 
       const hasCandidate = Object.values(nextCandidates).some((candidate) => candidate.image && candidate.promptSet);
       if (!hasCandidate) {
@@ -243,7 +264,7 @@ export function GenerativeImageStudio() {
       }
 
       setFlowState("awaiting-selection");
-      setProgressText("[2/3] 원하는 시안을 선택해주세요.");
+      setProgressText("2/6 원하는 시안을 선택해주세요.");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "제목 시안 생성에 실패했습니다.");
       setProgressText("");
@@ -262,9 +283,11 @@ export function GenerativeImageStudio() {
     setError("");
     setSelectedCandidateId(candidateId);
     setPromptSet(candidate.promptSet);
-    setFlowState("generating-derivatives");
+    setActualIcons([]);
+    setRecommendedIcons([]);
+    setFlowState("generating-title");
     setIsGenerating(true);
-    setProgressText("[3/3] 선택한 디자인에서 제목과 아이콘을 동시에 분리하고 있어요...");
+    setProgressText("3/6 선택한 디자인에서 제목만 분리하고 있어요...");
 
     const nextResults = initialResults();
     nextResults["decorated-title"] = {
@@ -276,60 +299,86 @@ export function GenerativeImageStudio() {
     nextResults["icons-only"] = { outputType: "icons-only", status: "generating" };
     setResults({ ...nextResults });
 
-    const derivativeStartedAt = performance.now();
-    const derivativeEntries = await Promise.all(
-      derivativeOrder.map(async (outputType) => {
-        const label = outputTypeLabelMap[outputType];
+    try {
+      const derivativeStartedAt = performance.now();
+      const [titleOnlyEntry, iconsOnlyEntry] = await Promise.all([
+        requestDerivative(candidate.promptSet, "title-only", candidate.image),
+        requestDerivative(candidate.promptSet, "icons-only", candidate.image)
+      ]);
 
-        try {
-          const image = await requestImage(candidate.promptSet as GeneratedPromptSet, outputType, {
-            inputImageDataUrl: candidate.image?.imageDataUrl,
-            sourceImageId: candidate.image?.id
-          });
-          return {
-            outputType,
-            result: { outputType, status: "success" as const, image }
-          };
-        } catch (caught) {
-          return {
-            outputType,
-            result: {
-              outputType,
+      nextResults["title-only"] = titleOnlyEntry;
+      nextResults["icons-only"] = iconsOnlyEntry;
+      setResults({ ...nextResults });
+      addTiming("Title and icon layer parallel extraction", performance.now() - derivativeStartedAt);
+
+      if (!titleOnlyEntry.image) {
+        throw new Error(titleOnlyEntry.error ?? "제목만 PNG 생성에 실패했습니다.");
+      }
+
+      if (!iconsOnlyEntry.image) {
+        throw new Error(iconsOnlyEntry.error ?? "실제 사용 아이콘 분석용 이미지 생성에 실패했습니다.");
+      }
+
+      setFlowState("analyzing-icons");
+      setProgressText("4/6 실제 사용 아이콘을 분석하고 있어요...");
+      const actualSpecs = getActualIconSpecs(candidate.promptSet.designSpec.decorations);
+      setActualIcons(actualSpecs.map((spec) => ({ kind: "actual", spec, status: "generating" })));
+
+      setFlowState("extracting-icons");
+      setProgressText("5/6 실제 사용 아이콘을 각각 분리하고 있어요...");
+      const actualStartedAt = performance.now();
+      const extractedActualIcons = await requestActualIcons(
+        iconsOnlyEntry.image.imageDataUrl,
+        actualSpecs,
+        iconsOnlyEntry.image.id
+      );
+      setActualIcons(toIconResults("actual", actualSpecs, extractedActualIcons));
+      addTiming("Actual icon component splitting", performance.now() - actualStartedAt);
+
+      setFlowState("generating-recommended");
+      setProgressText("6/6 같은 스타일의 추천 아이콘 3개를 만들고 있어요...");
+      const recommendedSpecs = getRecommendedIconSpecs(normalizeForm(form, false), candidate.promptSet.designSpec, actualSpecs);
+      setRecommendedIcons(recommendedSpecs.map((spec) => ({ kind: "recommended", spec, status: "generating" })));
+
+      const recommendedStartedAt = performance.now();
+      const recommendedEntries = await Promise.all(
+        recommendedSpecs.map(async (spec) => {
+          try {
+            const icon = await requestRecommendedIcon({
+              spec,
+              selectedImage: candidate.image as GeneratedImage,
+              actualIconNames: extractedActualIcons.map((icon) => icon.name),
+              promptSet: candidate.promptSet as GeneratedPromptSet,
+              form: normalizeForm(form, false)
+            });
+            return { kind: "recommended" as const, spec, status: "success" as const, icon };
+          } catch (caught) {
+            return {
+              kind: "recommended" as const,
+              spec,
               status: "error" as const,
-              error: caught instanceof Error ? caught.message : `${label} 생성에 실패했습니다.`
-            }
-          };
-        }
-      })
-    );
-    const derivativeMs = performance.now() - derivativeStartedAt;
-    let derivativeResizeMs = 0;
+              error: caught instanceof Error ? caught.message : `${spec.name} 추천 아이콘 생성에 실패했습니다.`
+            };
+          }
+        })
+      );
+      setRecommendedIcons(recommendedEntries);
+      addTiming("Recommended icon parallel generation", performance.now() - recommendedStartedAt);
+      addTiming("Total", performance.now() - runStartedAtRef.current);
 
-    for (const entry of derivativeEntries) {
-      nextResults[entry.outputType] = entry.result;
-      derivativeResizeMs += entry.result.image?.timings?.resizeMs ?? 0;
-    }
+      setFlowState("complete");
+      setProgressText("완료!");
 
-    setResults({ ...nextResults });
-    addTiming("Selected image extraction parallel processing", derivativeMs);
-    addTiming("Extraction server resize and PNG processing", derivativeResizeMs);
-    addTiming("Total", performance.now() - runStartedAtRef.current);
-
-    const allDerivativesSucceeded = derivativeEntries.every((entry) => entry.result.status === "success");
-    setFlowState("complete");
-    setProgressText(
-      allDerivativesSucceeded
-        ? "최종 3종 결과가 준비되었습니다."
-        : "선택한 디자인 기준으로 가능한 결과를 만들었습니다. 실패한 항목은 다시 선택해 재시도할 수 있습니다."
-    );
-
-    if (allDerivativesSucceeded) {
       const nextCount = dailyCount + 1;
       setDailyCount(nextCount);
       window.localStorage.setItem(todayKey, String(nextCount));
+    } catch (caught) {
+      setFlowState("complete");
+      setProgressText("가능한 결과를 표시했습니다. 실패한 항목은 개별 재시도할 수 있습니다.");
+      setError(caught instanceof Error ? caught.message : "선택한 시안 기준 결과 생성 중 오류가 발생했습니다.");
+    } finally {
+      setIsGenerating(false);
     }
-
-    setIsGenerating(false);
   };
 
   const regenerateCandidate = async (candidateId: CandidateId) => {
@@ -371,7 +420,7 @@ export function GenerativeImageStudio() {
       }));
       addTiming(`${candidateLabelMap[candidateId]} retry generation`, performance.now() - startedAt);
       setFlowState("awaiting-selection");
-      setProgressText("[2/3] 원하는 시안을 선택해주세요.");
+      setProgressText("2/6 원하는 시안을 선택해주세요.");
     } catch (caught) {
       setCandidates((current) => ({
         ...current,
@@ -400,24 +449,14 @@ export function GenerativeImageStudio() {
 
     setError("");
     setIsGenerating(true);
-    setProgressText("선택한 디자인에서 해당 결과물을 다시 분리하고 투명 배경을 검증하고 있어요...");
-    setResults((current) => ({
-      ...current,
-      [outputType]: { outputType, status: "generating" }
-    }));
+    setResults((current) => ({ ...current, [outputType]: { outputType, status: "generating" } }));
 
     const startedAt = performance.now();
     try {
-      const image = await requestImage(promptSet, outputType, {
-        inputImageDataUrl: selectedCandidate.image.imageDataUrl,
-        sourceImageId: selectedCandidate.image.id
-      });
-      setResults((current) => ({
-        ...current,
-        [outputType]: { outputType, status: "success", image }
-      }));
+      const result = await requestDerivative(promptSet, outputType, selectedCandidate.image);
+      setResults((current) => ({ ...current, [outputType]: result }));
       addTiming(`${outputTypeLabelMap[outputType]} retry extraction`, performance.now() - startedAt);
-      setProgressText("최종 3종 결과를 갱신했습니다.");
+      setProgressText("결과를 갱신했습니다.");
     } catch (caught) {
       setResults((current) => ({
         ...current,
@@ -427,7 +466,79 @@ export function GenerativeImageStudio() {
           error: caught instanceof Error ? caught.message : `${outputTypeLabelMap[outputType]} 재생성에 실패했습니다.`
         }
       }));
-      setProgressText("");
+    } finally {
+      setIsGenerating(false);
+    }
+  };
+
+  const regenerateActualIcon = async (index: number) => {
+    const iconLayer = results["icons-only"].image;
+    if (isGenerating || !iconLayer) {
+      return;
+    }
+
+    const specs = actualIcons.map((result) => result.spec);
+    setIsGenerating(true);
+    setActualIcons((current) =>
+      current.map((result, itemIndex) => (itemIndex === index ? { ...result, status: "generating", error: undefined } : result))
+    );
+
+    try {
+      const icons = await requestActualIcons(iconLayer.imageDataUrl, specs, iconLayer.id);
+      setActualIcons(toIconResults("actual", specs, icons));
+      setProgressText("실제 사용 아이콘을 다시 분리했습니다.");
+    } catch (caught) {
+      setActualIcons((current) =>
+        current.map((result, itemIndex) =>
+          itemIndex === index
+            ? {
+                ...result,
+                status: "error",
+                error: caught instanceof Error ? caught.message : "이 아이콘만 다시 분리하지 못했습니다."
+              }
+            : result
+        )
+      );
+    } finally {
+      setIsGenerating(false);
+    }
+  };
+
+  const regenerateRecommendedIcon = async (index: number) => {
+    const result = recommendedIcons[index];
+    if (isGenerating || !result || !selectedCandidate?.image || !promptSet) {
+      return;
+    }
+
+    setIsGenerating(true);
+    setRecommendedIcons((current) =>
+      current.map((item, itemIndex) => (itemIndex === index ? { ...item, status: "generating", error: undefined } : item))
+    );
+
+    try {
+      const icon = await requestRecommendedIcon({
+        spec: result.spec,
+        selectedImage: selectedCandidate.image,
+        actualIconNames: validActualIcons.map((iconAsset) => iconAsset.name),
+        promptSet,
+        form: normalizeForm(form, false)
+      });
+      setRecommendedIcons((current) =>
+        current.map((item, itemIndex) => (itemIndex === index ? { ...item, status: "success", icon } : item))
+      );
+      setProgressText("추천 아이콘을 다시 생성했습니다.");
+    } catch (caught) {
+      setRecommendedIcons((current) =>
+        current.map((item, itemIndex) =>
+          itemIndex === index
+            ? {
+                ...item,
+                status: "error",
+                error: caught instanceof Error ? caught.message : "추천 아이콘을 다시 생성하지 못했습니다."
+              }
+            : item
+        )
+      );
     } finally {
       setIsGenerating(false);
     }
@@ -438,21 +549,48 @@ export function GenerativeImageStudio() {
     window.location.href = "/login";
   };
 
-  const downloadAll = () => {
+  const downloadWholeZip = () => {
     try {
-      if (!finalSetReady) {
-        throw new Error("최종 3종 결과가 모두 실제 투명 PNG 검증을 통과한 뒤 ZIP 다운로드가 가능합니다.");
+      const decoratedTitle = results["decorated-title"].image;
+      const titleOnly = results["title-only"].image;
+
+      if (!finalZipReady || !decoratedTitle || !titleOnly) {
+        throw new Error("모든 결과가 실제 투명 PNG 검증을 통과한 뒤 최종 ZIP 다운로드가 가능합니다.");
       }
 
-      downloadImageZip(
-        form.title,
-        outputOrder.map((outputType) => ({
-          outputType,
-          dataUrl: results[outputType].image?.imageDataUrl ?? ""
-        }))
-      );
+      downloadFinalZip({
+        title: form.title,
+        decoratedTitle,
+        titleOnly,
+        actualIcons: validActualIcons,
+        recommendedIcons: validRecommendedIcons
+      });
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "ZIP 다운로드에 실패했습니다.");
+    }
+  };
+
+  const downloadActualZip = () => {
+    try {
+      downloadIconZip(form.title, "actual-icons", validActualIcons);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "실제 사용 아이콘 ZIP 다운로드에 실패했습니다.");
+    }
+  };
+
+  const downloadRecommendedZip = () => {
+    try {
+      downloadIconZip(form.title, "recommended-icons", validRecommendedIcons);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "추천 아이콘 ZIP 다운로드에 실패했습니다.");
+    }
+  };
+
+  const downloadIconsZip = () => {
+    try {
+      downloadAllIconsZip(form.title, validActualIcons, validRecommendedIcons);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "아이콘 전체 ZIP 다운로드에 실패했습니다.");
     }
   };
 
@@ -475,7 +613,7 @@ export function GenerativeImageStudio() {
               </button>
             </div>
             <p className="mt-2 text-sm font-medium leading-6 text-slate-500">
-              품질은 항상 high로 유지합니다. 속도는 시안 2개 병렬 생성과 선택 후 병렬 편집으로 최적화합니다.
+              품질은 항상 high로 유지합니다. 선택한 시안에서 제목과 실제 사용 아이콘을 분리하고 추천 아이콘을 생성합니다.
             </p>
           </header>
 
@@ -548,7 +686,7 @@ export function GenerativeImageStudio() {
                 ))}
               </div>
               <p className="rounded-lg bg-white px-3 py-3 text-xs font-bold leading-5 text-slate-500">
-                AI 생성은 한 번만 수행하고, 최종 PNG 크기 보정은 서버에서 정확히 처리합니다.
+                제목 결과는 선택한 크기로, 개별 아이콘은 alpha 기준 trim 후 안전 여백을 넣어 저장합니다.
               </p>
             </FormSection>
 
@@ -579,16 +717,16 @@ export function GenerativeImageStudio() {
             <div>
               <h2 className="text-xl font-black tracking-[-0.04em] text-slate-950">생성 결과</h2>
               <p className="mt-1 text-sm font-medium text-slate-500">
-                선택 전에는 제목만/아이콘만 PNG를 만들지 않습니다. 선택한 꾸민 제목 이미지를 입력 이미지로 편집합니다.
+                미리보기 체크무늬는 CSS 배경입니다. 다운로드 파일은 서버에서 실제 alpha PNG 검증을 통과해야 활성화됩니다.
               </p>
             </div>
             <button
               className="rounded-lg bg-[#5F8F8B] px-4 py-2.5 text-xs font-extrabold text-white transition hover:bg-[#527d79] disabled:cursor-not-allowed disabled:opacity-45"
-              disabled={!finalSetReady}
+              disabled={!finalZipReady}
               type="button"
-              onClick={downloadAll}
+              onClick={downloadWholeZip}
             >
-              최종 3종 다운로드
+              최종 전체 ZIP 다운로드
             </button>
           </div>
 
@@ -599,13 +737,11 @@ export function GenerativeImageStudio() {
 
           {candidateSet || flowState === "generating-candidates" ? (
             <section className="mt-5">
-              <div className="mb-3 flex items-center justify-between gap-3">
-                <div>
-                  <h3 className="font-black tracking-[-0.03em] text-slate-900">1단계: 꾸민 제목 투명 PNG 2안</h3>
-                  <p className="mt-1 text-sm font-medium text-slate-500">
-                    두 시안은 동시에 생성됩니다. 둘 중 하나를 선택해야 파생 PNG가 만들어집니다.
-                  </p>
-                </div>
+              <div className="mb-3">
+                <h3 className="font-black tracking-[-0.03em] text-slate-900">1단계: 꾸민 제목 투명 PNG 2안</h3>
+                <p className="mt-1 text-sm font-medium text-slate-500">
+                  두 시안은 동시에 생성됩니다. 둘 중 하나를 선택해야 제목/아이콘 분리가 진행됩니다.
+                </p>
               </div>
               <div className="grid gap-4 xl:grid-cols-2">
                 {candidateList.map((candidate) => (
@@ -626,43 +762,80 @@ export function GenerativeImageStudio() {
 
           {promptSet ? <PromptSummary promptSet={promptSet} selectedLabel={selectedCandidate?.label ?? ""} /> : null}
 
-          {flowState === "generating-derivatives" || flowState === "complete" ? (
-            <section className="mt-5">
-              <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-                <div>
-                  <h3 className="font-black tracking-[-0.03em] text-slate-900">최종 3종 결과</h3>
-                  <p className="mt-1 text-sm font-medium text-slate-500">
-                    선택한 {selectedCandidate?.label ?? "안"}의 꾸민 제목 PNG를 입력 이미지로 사용해 분리한 세트입니다.
-                  </p>
+          {flowState === "generating-title" ||
+          flowState === "analyzing-icons" ||
+          flowState === "extracting-icons" ||
+          flowState === "generating-recommended" ||
+          flowState === "complete" ? (
+            <>
+              <section className="mt-5">
+                <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <h3 className="font-black tracking-[-0.03em] text-slate-900">선택한 제목 결과</h3>
+                    <p className="mt-1 text-sm font-medium text-slate-500">
+                      선택한 {selectedCandidate?.label ?? "안"} 기준의 꾸민 제목과 제목만 PNG입니다.
+                    </p>
+                  </div>
+                  <button
+                    className="rounded-lg border border-slate-200 bg-white px-4 py-2.5 text-xs font-extrabold text-slate-700 transition hover:border-[#5F8F8B] disabled:cursor-not-allowed disabled:opacity-45"
+                    disabled={!finalZipReady}
+                    type="button"
+                    onClick={downloadWholeZip}
+                  >
+                    최종 전체 ZIP 다운로드
+                  </button>
                 </div>
-                <button
-                  className="rounded-lg border border-slate-200 bg-white px-4 py-2.5 text-xs font-extrabold text-slate-700 transition hover:border-[#5F8F8B] disabled:cursor-not-allowed disabled:opacity-45"
-                  disabled={!finalSetReady}
-                  type="button"
-                  onClick={downloadAll}
-                >
-                  3개 모두 ZIP 다운로드
-                </button>
-              </div>
 
-              <div className="grid gap-4 xl:grid-cols-3">
-                {outputOrder.map((outputType) => (
-                  <FinalResultCard
-                    key={outputType}
-                    formTitle={form.title}
-                    result={results[outputType]}
-                    size={form.size}
-                    onRetry={outputType === "decorated-title" ? undefined : () => regenerateDerivative(outputType)}
-                  />
-                ))}
-              </div>
+                <div className="grid gap-4 xl:grid-cols-2">
+                  {primaryOutputOrder.map((outputType) => (
+                    <FinalResultCard
+                      key={outputType}
+                      formTitle={form.title}
+                      result={results[outputType]}
+                      size={form.size}
+                      onRetry={outputType === "decorated-title" ? undefined : () => regenerateDerivative(outputType)}
+                    />
+                  ))}
+                </div>
+              </section>
 
-              {successfulFinalResults.length > 0 ? (
-                <p className="mt-3 rounded-lg bg-white px-3 py-3 text-xs font-bold leading-5 text-slate-500">
-                  PNG 각각 다운로드는 각 카드에서, ZIP 다운로드는 세 결과물이 모두 성공했을 때 사용할 수 있습니다.
-                </p>
-              ) : null}
-            </section>
+              <IconSection
+                title="실제 사용 아이콘"
+                description="선택한 꾸민 제목에서 분리한 실제 아이콘입니다. 각 아이콘은 alpha 기준으로 trim됩니다."
+                zipLabel="실제 사용 아이콘 전체 ZIP"
+                zipDisabled={validActualIcons.length === 0 || validActualIcons.length !== actualIcons.length}
+                onZipDownload={downloadActualZip}
+              >
+                <IconGrid
+                  emptyText="실제 사용 아이콘은 제목 시안 선택 후 분리됩니다."
+                  results={actualIcons}
+                  onRetry={regenerateActualIcon}
+                />
+              </IconSection>
+
+              <IconSection
+                title="같은 스타일의 추천 아이콘"
+                description="실제 사용 아이콘과 같은 색상, 선 굵기, 외곽선, 분위기를 참고해 만든 추가 아이콘 3개입니다."
+                zipLabel="추천 아이콘 3개 ZIP"
+                zipDisabled={validRecommendedIcons.length === 0 || validRecommendedIcons.length !== recommendedIcons.length}
+                onZipDownload={downloadRecommendedZip}
+              >
+                <IconGrid
+                  emptyText="실제 사용 아이콘 분리 후 추천 아이콘 3개가 생성됩니다."
+                  results={recommendedIcons}
+                  onRetry={regenerateRecommendedIcon}
+                />
+              </IconSection>
+
+              <div className="mt-4 flex flex-wrap gap-2 rounded-lg bg-white p-3">
+                <ActionButton disabled={validActualIcons.length + validRecommendedIcons.length === 0} onClick={downloadIconsZip}>
+                  모든 아이콘 ZIP 다운로드
+                </ActionButton>
+                <ActionButton disabled={!finalZipReady} onClick={downloadWholeZip}>
+                  최종 전체 ZIP 다운로드
+                </ActionButton>
+              </div>
+            </>
           ) : null}
         </section>
       </div>
@@ -677,6 +850,8 @@ export function GenerativeImageStudio() {
     setSelectedCandidateId(null);
     setPromptSet(null);
     setResults(initialResults());
+    setActualIcons([]);
+    setRecommendedIcons([]);
     setError("");
     setProgressText("");
     setTimings([]);
@@ -684,6 +859,22 @@ export function GenerativeImageStudio() {
 
   function addTiming(label: string, ms: number) {
     setTimings((current) => [...current.filter((entry) => entry.label !== label), { label, ms }]);
+  }
+}
+
+async function requestDerivative(promptSet: GeneratedPromptSet, outputType: OutputType, selectedImage: GeneratedImage) {
+  try {
+    const image = await requestImage(promptSet, outputType, {
+      inputImageDataUrl: selectedImage.imageDataUrl,
+      sourceImageId: selectedImage.id
+    });
+    return { outputType, status: "success" as const, image };
+  } catch (caught) {
+    return {
+      outputType,
+      status: "error" as const,
+      error: caught instanceof Error ? caught.message : `${outputTypeLabelMap[outputType]} 생성에 실패했습니다.`
+    };
   }
 }
 
@@ -714,6 +905,91 @@ async function requestImage(promptSet: GeneratedPromptSet, outputType: OutputTyp
   }
 
   return data.image as GeneratedImage;
+}
+
+async function requestActualIcons(imageDataUrl: string, specs: IconSpec[], sourceImageId?: string) {
+  const response = await fetch("/api/extract-icons", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ imageDataUrl, specs, sourceImageId })
+  });
+  const data = await response.json();
+
+  if (response.status === 401) {
+    window.location.href = "/login";
+    throw new Error("인증이 만료되었습니다.");
+  }
+
+  if (!response.ok) {
+    throw new Error(data.error ?? "실제 사용 아이콘 분리에 실패했습니다.");
+  }
+
+  return data.icons as GeneratedIconAsset[];
+}
+
+async function requestRecommendedIcon({
+  spec,
+  selectedImage,
+  actualIconNames,
+  promptSet,
+  form
+}: {
+  spec: IconSpec;
+  selectedImage: GeneratedImage;
+  actualIconNames: string[];
+  promptSet: GeneratedPromptSet;
+  form: EducationImageForm;
+}) {
+  const response = await fetch("/api/generate-recommended-icon", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      form,
+      designSpec: promptSet.designSpec,
+      iconSpec: spec,
+      actualIconNames,
+      inputImageDataUrl: selectedImage.imageDataUrl,
+      sourceImageId: selectedImage.id
+    })
+  });
+  const data = await response.json();
+
+  if (response.status === 401) {
+    window.location.href = "/login";
+    throw new Error("인증이 만료되었습니다.");
+  }
+
+  if (!response.ok) {
+    const status = data.status as PngValidationStatus | undefined;
+    throw new Error(status === "CHECKERBOARD_DETECTED" ? checkerboardFailureMessage : data.error ?? "추천 아이콘 생성에 실패했습니다.");
+  }
+
+  return data.icon as GeneratedIconAsset;
+}
+
+function toIconResults(kind: IconAssetKind, specs: IconSpec[], icons: GeneratedIconAsset[]): IconResult[] {
+  return specs.map((spec, index) => {
+    const icon = icons[index];
+
+    if (!icon) {
+      return {
+        kind,
+        spec,
+        status: "error",
+        error: `${spec.name} 아이콘을 분리하지 못했습니다.`
+      };
+    }
+
+    const valid = icon.validationStatus === "VALID_TRANSPARENT_PNG";
+
+    return {
+      kind,
+      spec,
+      status: valid ? "success" : "error",
+      icon,
+      error: valid ? undefined : icon.validation?.message ?? "투명 PNG 검증에 실패했습니다."
+    };
+  });
 }
 
 function CandidateCard({
@@ -762,9 +1038,7 @@ function CandidateCard({
           <p className="mb-1 inline-flex rounded-full bg-[#F8F4EC] px-2.5 py-1 text-[11px] font-black text-[#527d79]">
             {result.direction}
           </p>
-          <h3 className="font-extrabold tracking-[-0.03em] text-slate-900">
-            꾸민 제목 투명 PNG - {result.label}
-          </h3>
+          <h3 className="font-extrabold tracking-[-0.03em] text-slate-900">꾸민 제목 투명 PNG - {result.label}</h3>
           <p className="mt-1 text-xs font-bold leading-5 text-slate-400">
             배경 투명 후처리 · 제목 중심 · 소량 장식 · high 품질 · {size}
           </p>
@@ -826,7 +1100,7 @@ function FinalResultCard({
         {result.status === "success" && result.image ? (
           <img alt={`${label} 미리보기`} className="max-h-[420px] w-full rounded-md object-contain" src={result.image.imageDataUrl} />
         ) : result.status === "generating" ? (
-          <p className="text-sm font-extrabold text-slate-500">동시에 분리 생성 중...</p>
+          <p className="text-sm font-extrabold text-slate-500">투명 PNG 생성 중...</p>
         ) : result.status === "error" ? (
           <p className="px-4 text-center text-sm font-bold leading-6 text-red-600">{result.error}</p>
         ) : (
@@ -867,14 +1141,125 @@ function FinalResultCard({
   );
 }
 
-function ValidationMeta({ image }: { image: GeneratedImage }) {
-  const isValid = isValidTransparentImage(image);
+function IconSection({
+  title,
+  description,
+  zipLabel,
+  zipDisabled,
+  onZipDownload,
+  children
+}: {
+  title: string;
+  description: string;
+  zipLabel: string;
+  zipDisabled: boolean;
+  onZipDownload: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <section className="mt-5">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h3 className="font-black tracking-[-0.03em] text-slate-900">{title}</h3>
+          <p className="mt-1 text-sm font-medium text-slate-500">{description}</p>
+        </div>
+        <button
+          className="rounded-lg border border-slate-200 bg-white px-4 py-2.5 text-xs font-extrabold text-slate-700 transition hover:border-[#5F8F8B] disabled:cursor-not-allowed disabled:opacity-45"
+          disabled={zipDisabled}
+          type="button"
+          onClick={onZipDownload}
+        >
+          {zipLabel}
+        </button>
+      </div>
+      {children}
+    </section>
+  );
+}
+
+function IconGrid({ results, emptyText, onRetry }: { results: IconResult[]; emptyText: string; onRetry: (index: number) => void }) {
+  if (results.length === 0) {
+    return (
+      <div className="rounded-lg border border-dashed border-slate-300 bg-white/70 p-5 text-sm font-bold text-slate-400">
+        {emptyText}
+      </div>
+    );
+  }
+
+  return (
+    <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+      {results.map((result, index) => (
+        <IconCard key={`${result.kind}-${result.spec.id}-${index}`} result={result} onRetry={() => onRetry(index)} />
+      ))}
+    </div>
+  );
+}
+
+function IconCard({ result, onRetry }: { result: IconResult; onRetry: () => void }) {
+  const icon = result.icon;
+  const canDownload = isValidIconAsset(icon);
+
+  return (
+    <article className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
+      <div className="checkerboard flex aspect-square min-h-[180px] items-center justify-center p-4">
+        {result.status === "success" && icon ? (
+          <img alt={`${result.spec.name} 아이콘 미리보기`} className="max-h-[220px] max-w-full object-contain" src={icon.imageDataUrl} />
+        ) : result.status === "generating" ? (
+          <p className="text-sm font-extrabold text-slate-500">
+            {result.kind === "actual" ? "아이콘 분리 중..." : "추천 아이콘 생성 중..."}
+          </p>
+        ) : result.status === "error" ? (
+          <p className="px-4 text-center text-sm font-bold leading-6 text-red-600">{result.error}</p>
+        ) : (
+          <p className="text-sm font-bold text-slate-400">대기 중입니다.</p>
+        )}
+      </div>
+
+      <div className="space-y-3 p-4">
+        <div>
+          <p className="mb-1 inline-flex rounded-full bg-[#F8F4EC] px-2.5 py-1 text-[11px] font-black text-[#527d79]">
+            {result.kind === "actual" ? "실제 사용" : "추천"}
+          </p>
+          <h4 className="font-extrabold tracking-[-0.03em] text-slate-900">{result.spec.name}</h4>
+          {icon ? (
+            <p className="mt-1 text-xs font-bold leading-5 text-slate-400">
+              {icon.width} x {icon.height}px · {icon.operation ?? "server-extract"}
+            </p>
+          ) : null}
+        </div>
+
+        {icon ? <ValidationMeta icon={icon} /> : null}
+
+        <div className="flex flex-wrap gap-2">
+          <ActionButton
+            disabled={!canDownload}
+            onClick={() => {
+              if (!icon || !canDownload) return;
+              downloadDataUrl(icon.imageDataUrl, icon.fileName);
+            }}
+          >
+            PNG 다운로드
+          </ActionButton>
+          <ActionButton onClick={onRetry}>
+            {result.kind === "actual" ? "이 아이콘만 다시 분리" : "이 추천 아이콘만 다시 생성"}
+          </ActionButton>
+        </div>
+      </div>
+    </article>
+  );
+}
+
+function ValidationMeta({ image, icon }: { image?: GeneratedImage; icon?: GeneratedIconAsset }) {
+  const validationStatus = image?.validationStatus ?? icon?.validationStatus;
+  const validation = image?.validation ?? icon?.validation;
+  const corrected = image?.corrected ?? icon?.corrected;
+  const isValid = validationStatus === "VALID_TRANSPARENT_PNG";
 
   return (
     <p className={`text-xs font-extrabold ${isValid ? "text-[#527d79]" : "text-red-600"}`}>
-      {getValidationLabel(image.validationStatus)}
-      {image.corrected ? " · 자동 보정됨" : ""}
-      {image.validation ? ` · 투명 ${formatPercent(image.validation.transparentPixelRatio)}` : ""}
+      {getValidationLabel(validationStatus)}
+      {corrected ? " · 자동 보정됨" : ""}
+      {validation ? ` · 투명 ${formatPercent(validation.transparentPixelRatio)}` : ""}
     </p>
   );
 }
@@ -903,7 +1288,7 @@ function PromptSummary({ promptSet, selectedLabel }: { promptSet: GeneratedPromp
       <div className="mt-4 grid gap-3 md:grid-cols-2">
         <InfoBlock label="핵심 정서 3개" value={promptSet.designSpec.coreEmotions.join(", ")} />
         <InfoBlock label="핵심 키워드 5개" value={promptSet.designSpec.keywords.join(", ")} />
-        <InfoBlock label="추천 아이콘" value={promptSet.designSpec.decorations.join(", ")} />
+        <InfoBlock label="실제 사용 아이콘 후보" value={promptSet.designSpec.decorations.join(", ")} />
         <InfoBlock label="줄바꿈" value={promptSet.designSpec.lineBreakPlan} />
       </div>
 
@@ -924,7 +1309,7 @@ function PromptSummary({ promptSet, selectedLabel }: { promptSet: GeneratedPromp
 
       {openPrompt ? (
         <pre className="mt-4 max-h-72 overflow-auto rounded-lg bg-slate-950 p-3 text-xs leading-5 text-slate-100">
-          {outputOrder.map((outputType) => `${outputTypeLabelMap[outputType]}\n${promptSet.prompts[outputType].prompt}`).join("\n\n---\n\n")}
+          {primaryOutputOrder.map((outputType) => `${outputTypeLabelMap[outputType]}\n${promptSet.prompts[outputType].prompt}`).join("\n\n---\n\n")}
         </pre>
       ) : null}
     </div>
@@ -936,7 +1321,7 @@ function EmptyPrompt() {
     <div className="mt-5 rounded-lg border border-dashed border-slate-300 bg-white/70 p-6">
       <h3 className="font-black tracking-[-0.03em] text-slate-800">아직 생성된 제목 시안이 없습니다</h3>
       <p className="mt-2 text-sm font-medium leading-6 text-slate-500">
-        교육명과 내용을 입력한 뒤 제목 시안 2안을 먼저 생성해 주세요. 선택한 시안을 기준으로 최종 3종 PNG가 만들어집니다.
+        교육명과 내용을 입력한 뒤 제목 시안 2안을 먼저 생성해 주세요. 선택한 시안을 기준으로 제목/아이콘 세트가 만들어집니다.
       </p>
     </div>
   );
@@ -944,16 +1329,19 @@ function EmptyPrompt() {
 
 function FlowSteps({ state }: { state: FlowState }) {
   const steps: Array<{ state: FlowState; label: string; description: string }> = [
-    { state: "idle", label: "상태 1", description: "초기 입력 상태" },
-    { state: "generating-candidates", label: "상태 2", description: "[1/3] 시안 2안 동시 생성" },
-    { state: "awaiting-selection", label: "상태 3", description: "[2/3] 시안 선택 대기" },
-    { state: "generating-derivatives", label: "상태 4", description: "[3/3] 제목/아이콘 동시 분리" },
-    { state: "complete", label: "상태 5", description: "최종 3종 결과 표시" }
+    { state: "idle", label: "1/6", description: "초기 입력" },
+    { state: "generating-candidates", label: "1/6", description: "시안 2안 동시 생성" },
+    { state: "awaiting-selection", label: "2/6", description: "시안 선택" },
+    { state: "generating-title", label: "3/6", description: "제목만 분리" },
+    { state: "analyzing-icons", label: "4/6", description: "아이콘 분석" },
+    { state: "extracting-icons", label: "5/6", description: "아이콘 개별 분리" },
+    { state: "generating-recommended", label: "6/6", description: "추천 아이콘 생성" },
+    { state: "complete", label: "완료", description: "최종 결과 표시" }
   ];
   const activeIndex = steps.findIndex((step) => step.state === state);
 
   return (
-    <div className="grid gap-2 rounded-lg border border-slate-200 bg-white p-3 md:grid-cols-5">
+    <div className="grid gap-2 rounded-lg border border-slate-200 bg-white p-3 md:grid-cols-4 xl:grid-cols-8">
       {steps.map((step, index) => {
         const isActive = index === activeIndex;
         const isDone = index < activeIndex;
@@ -962,11 +1350,7 @@ function FlowSteps({ state }: { state: FlowState }) {
           <div
             key={step.state}
             className={`rounded-lg px-3 py-2 ${
-              isActive
-                ? "bg-[#5F8F8B] text-white"
-                : isDone
-                  ? "bg-[#F8F4EC] text-slate-700"
-                  : "bg-slate-50 text-slate-400"
+              isActive ? "bg-[#5F8F8B] text-white" : isDone ? "bg-[#F8F4EC] text-slate-700" : "bg-slate-50 text-slate-400"
             }`}
           >
             <p className="text-[11px] font-black">{step.label}</p>
@@ -1089,11 +1473,7 @@ function InfoBlock({ label, value }: { label: string; value: string }) {
 }
 
 function Notice({ children }: { children: ReactNode }) {
-  return (
-    <div className="mt-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm font-bold leading-6 text-red-700">
-      {children}
-    </div>
-  );
+  return <div className="mt-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm font-bold leading-6 text-red-700">{children}</div>;
 }
 
 function markAllCandidates(status: ResultStatus): Record<CandidateId, CandidateResult> {
@@ -1141,12 +1521,20 @@ function isValidTransparentImage(image?: GeneratedImage) {
   return image?.validationStatus === "VALID_TRANSPARENT_PNG";
 }
 
+function isValidIconAsset(icon?: GeneratedIconAsset): icon is GeneratedIconAsset {
+  return icon?.validationStatus === "VALID_TRANSPARENT_PNG";
+}
+
 function getValidationLabel(status?: PngValidationStatus) {
   const labels: Record<PngValidationStatus, string> = {
     VALID_TRANSPARENT_PNG: "투명 PNG 검증 완료",
+    BACKGROUND_REMOVAL_APPLIED: "배경 제거 적용",
     CHECKERBOARD_DETECTED: "체크무늬 감지",
     NO_ALPHA_CHANNEL: "알파 채널 없음",
     LOW_TRANSPARENCY: "투명 영역 부족",
+    WHITE_BACKGROUND_DETECTED: "흰색 배경 감지",
+    GRAY_BACKGROUND_DETECTED: "회색 배경 감지",
+    BACKGROUND_REMAINS: "배경 잔존",
     PROCESSING_FAILED: "PNG 처리 실패"
   };
 

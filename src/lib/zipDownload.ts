@@ -1,5 +1,5 @@
 import { createSafeBaseName, crc32, dataUrlToBytes } from "@/lib/imageDownload";
-import type { OutputType } from "@/lib/generativeTypes";
+import type { GeneratedIconAsset, GeneratedImage, OutputType } from "@/lib/generativeTypes";
 
 type ZipImage = {
   outputType: OutputType;
@@ -21,12 +21,79 @@ export function downloadImageZip(title: string, images: ZipImage[]) {
     name: fileNames[image.outputType],
     bytes: dataUrlToBytes(image.dataUrl)
   }));
+  downloadZipFiles(`${createSafeBaseName(title)}_제목이미지_3종.zip`, files);
+}
+
+export function downloadIconZip(title: string, folderName: "actual-icons" | "recommended-icons", icons: GeneratedIconAsset[]) {
+  if (icons.length === 0) {
+    throw new Error("ZIP으로 묶을 아이콘이 없습니다.");
+  }
+
+  downloadZipFiles(
+    `${createSafeBaseName(title)}_${folderName === "actual-icons" ? "실제사용아이콘" : "추천아이콘"}.zip`,
+    icons.map((icon) => ({
+      name: `${folderName}/${icon.fileName}`,
+      bytes: dataUrlToBytes(icon.imageDataUrl)
+    }))
+  );
+}
+
+export function downloadAllIconsZip(title: string, actualIcons: GeneratedIconAsset[], recommendedIcons: GeneratedIconAsset[]) {
+  const files = [
+    ...actualIcons.map((icon) => ({ name: `actual-icons/${icon.fileName}`, bytes: dataUrlToBytes(icon.imageDataUrl) })),
+    ...recommendedIcons.map((icon) => ({
+      name: `recommended-icons/${icon.fileName}`,
+      bytes: dataUrlToBytes(icon.imageDataUrl)
+    }))
+  ];
+
+  if (files.length === 0) {
+    throw new Error("ZIP으로 묶을 아이콘이 없습니다.");
+  }
+
+  downloadZipFiles(`${createSafeBaseName(title)}_아이콘전체.zip`, files);
+}
+
+export function downloadFinalZip({
+  title,
+  decoratedTitle,
+  titleOnly,
+  actualIcons,
+  recommendedIcons
+}: {
+  title: string;
+  decoratedTitle: GeneratedImage;
+  titleOnly: GeneratedImage;
+  actualIcons: GeneratedIconAsset[];
+  recommendedIcons: GeneratedIconAsset[];
+}) {
+  downloadZipFiles(`${createSafeBaseName(title)}_최종결과.zip`, [
+    {
+      name: "01_꾸민제목_투명.png",
+      bytes: dataUrlToBytes(decoratedTitle.imageDataUrl)
+    },
+    {
+      name: "02_제목만_투명.png",
+      bytes: dataUrlToBytes(titleOnly.imageDataUrl)
+    },
+    ...actualIcons.map((icon) => ({
+      name: `actual-icons/${icon.fileName.replace(/^actual_/, "")}`,
+      bytes: dataUrlToBytes(icon.imageDataUrl)
+    })),
+    ...recommendedIcons.map((icon) => ({
+      name: `recommended-icons/${icon.fileName.replace(/^recommended_/, "")}`,
+      bytes: dataUrlToBytes(icon.imageDataUrl)
+    }))
+  ]);
+}
+
+export function downloadZipFiles(fileName: string, files: Array<{ name: string; bytes: Uint8Array }>) {
   const zipBytes = createStoredZip(files);
   const blob = new Blob([zipBytes], { type: "application/zip" });
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
-  link.download = `${createSafeBaseName(title)}_제목이미지_3종.zip`;
+  link.download = fileName;
   document.body.appendChild(link);
   link.click();
   link.remove();

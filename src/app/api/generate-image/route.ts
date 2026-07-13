@@ -1,10 +1,10 @@
 import { NextResponse } from "next/server";
 import { requireAuthenticated } from "@/lib/auth";
 import { getOpenAIImageSize } from "@/lib/generativeOptions";
-import { getOpenAIErrorMessage } from "@/lib/openaiErrors";
+import { chooseImageModel, requestImageEdit, requestImageGeneration } from "@/lib/openaiImageApi";
 import { isTransparentOutput } from "@/lib/promptBuilder";
-import { dataUrlToBuffer, prepareServerPng } from "@/lib/serverImageProcessing";
-import type { GeneratedPrompt, OutputType, PngValidationStatus } from "@/lib/generativeTypes";
+import { prepareServerPng } from "@/lib/serverImageProcessing";
+import type { GeneratedPrompt, PngValidationStatus } from "@/lib/generativeTypes";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -14,15 +14,6 @@ type RequestBody = {
   variationHint?: string;
   inputImageDataUrl?: string;
   sourceImageId?: string;
-};
-
-type OpenAIImageResponse = {
-  data?: Array<{
-    b64_json?: string;
-    revised_prompt?: string;
-  }>;
-  usage?: unknown;
-  background?: "transparent" | "opaque" | "auto";
 };
 
 const retryPromptPrefix = [
@@ -206,100 +197,4 @@ function getValidationFailureMessage(status: PngValidationStatus) {
   }
 
   return "실제 투명 배경 생성에 실패했습니다. 다시 시도해주세요.";
-}
-
-async function requestImageGeneration({
-  apiPrompt,
-  apiSize,
-  model,
-  transparentRequested
-}: {
-  apiPrompt: string;
-  apiSize: string;
-  model: string;
-  transparentRequested: boolean;
-}) {
-  const requestBody: Record<string, unknown> = {
-    model,
-    prompt: apiPrompt,
-    n: 1,
-    size: apiSize,
-    quality: "high",
-    output_format: "png"
-  };
-
-  if (transparentRequested && !model.startsWith("gpt-image-2")) {
-    requestBody.background = "transparent";
-  } else if (!model.startsWith("gpt-image-2")) {
-    requestBody.background = "auto";
-  }
-
-  const response = await fetch("https://api.openai.com/v1/images/generations", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify(requestBody)
-  });
-  const data = await response.json();
-
-  if (!response.ok) {
-    throw new Error(getOpenAIErrorMessage(data, "OpenAI 이미지 생성 API 요청에 실패했습니다."));
-  }
-
-  return data as OpenAIImageResponse;
-}
-
-async function requestImageEdit({
-  apiPrompt,
-  apiSize,
-  inputImageDataUrl,
-  model,
-  transparentRequested
-}: {
-  apiPrompt: string;
-  apiSize: string;
-  inputImageDataUrl: string;
-  model: string;
-  transparentRequested: boolean;
-}) {
-  const source = dataUrlToBuffer(inputImageDataUrl);
-  const formData = new FormData();
-  formData.set("model", model);
-  formData.set("prompt", apiPrompt);
-  formData.set("n", "1");
-  formData.set("size", apiSize);
-  formData.set("quality", "high");
-  formData.set("output_format", "png");
-  formData.set("image", new File([source.buffer], "selected-decorated-title.png", { type: source.mimeType }));
-
-  if (transparentRequested && !model.startsWith("gpt-image-2")) {
-    formData.set("background", "transparent");
-  }
-
-  const response = await fetch("https://api.openai.com/v1/images/edits", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${process.env.OPENAI_API_KEY}`
-    },
-    body: formData
-  });
-  const data = await response.json();
-
-  if (!response.ok) {
-    throw new Error(getOpenAIErrorMessage(data, "OpenAI 이미지 편집 API 요청에 실패했습니다."));
-  }
-
-  return data as OpenAIImageResponse;
-}
-
-function chooseImageModel(outputType: OutputType) {
-  void outputType;
-
-  if (process.env.OPENAI_IMAGE_MODEL) {
-    return process.env.OPENAI_IMAGE_MODEL;
-  }
-
-  return "gpt-image-2";
 }
